@@ -1,0 +1,6 @@
+{
+  "name": "DiardNews",
+  "description": "Агрегатор новостей об эмуляции систем с гибкой фильтрацией, переводчиком и авто-тегами",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
