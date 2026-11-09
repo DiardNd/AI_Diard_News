@@ -1,6 +1,13 @@
 package com.example.data.repository
 
+import com.example.data.config.ConfigExporter
+import com.example.data.config.ExportedArticleTags
+import com.example.data.config.ExportedConfig
+import com.example.data.config.ExportedSource
+import com.example.data.config.ExportedTag
+import com.example.data.config.ImportResult
 import com.example.data.local.AppDatabase
+import com.example.data.local.UserPreferencesRepository
 import com.example.data.local.entity.NewsEntity
 import com.example.data.local.entity.NewsTagCrossRef
 import com.example.data.local.entity.SourceEntity
@@ -18,12 +25,15 @@ import java.util.Locale
 
 class NewsRepository(
     private val database: AppDatabase,
+    private val userPreferencesRepository: UserPreferencesRepository,
     private val feedFetcher: FeedFetcher = FeedFetcher(),
     private val translationService: TranslationService = TranslationService()
 ) {
     private val sourceDao = database.sourceDao()
     private val tagDao = database.tagDao()
     private val newsDao = database.newsDao()
+
+    val lastRefreshAt: Flow<Long> = userPreferencesRepository.lastRefreshAt
 
     val allSources: Flow<List<NewsSource>> = sourceDao.getAllSources().map { list ->
         list.map { it.toDomain() }
@@ -77,96 +87,116 @@ class NewsRepository(
 
     suspend fun ensureDefaultData() = withContext(Dispatchers.IO) {
         if (sourceDao.count() == 0) {
-            val defaultSources = listOf(
-                SourceEntity(
-                    title = "Libretro & RetroArch Blog",
-                    url = "https://www.libretro.com/index.php/feed/",
-                    isEnabled = true
-                ),
-                SourceEntity(
-                    title = "Reddit r/emulation",
-                    url = "https://www.reddit.com/r/emulation/.rss",
-                    isEnabled = true
-                ),
-                SourceEntity(
-                    title = "Dolphin Emulator",
-                    url = "https://dolphin-emu.org/blog/feeds/",
-                    isEnabled = true
-                ),
-                SourceEntity(
-                    title = "PPSSPP PSP Emulator",
-                    url = "https://www.ppsspp.org/feed.xml",
-                    isEnabled = true
-                ),
-                SourceEntity(
-                    title = "RPCS3 PS3 Emulator",
-                    url = "https://rpcs3.net/blog/feed/",
-                    isEnabled = true
-                )
-            )
+            val defaultSources = getDefaultSourcesList()
             sourceDao.insertSources(defaultSources)
         }
 
         if (tagDao.count() == 0) {
-            val defaultTags = listOf(
-                TagEntity(
-                    name = "RetroArch",
-                    colorHex = "#00D2D3",
-                    keywords = "retroarch, libretro, core, cores"
-                ),
-                TagEntity(
-                    name = "Winlator",
-                    colorHex = "#FF9F43",
-                    keywords = "winlator, box64, mobox, wine, x86"
-                ),
-                TagEntity(
-                    name = "PS2",
-                    colorHex = "#54A0FF",
-                    keywords = "ps2, playstation 2, pcsx2, aethersx2, netherx2"
-                ),
-                TagEntity(
-                    name = "Switch",
-                    colorHex = "#FF6B6B",
-                    keywords = "switch, yuzu, ryujinx, suyu, sudachi, nintendo switch"
-                ),
-                TagEntity(
-                    name = "Windows-эмуляция",
-                    colorHex = "#48DBFB",
-                    keywords = "windows, winlator, dxvk, wine, x86, directx, direct3d"
-                ),
-                TagEntity(
-                    name = "Гайд",
-                    colorHex = "#1DD1A1",
-                    keywords = "guide, tutorial, гайд, инструкция, how to, настройка, manual"
-                ),
-                TagEntity(
-                    name = "Релиз",
-                    colorHex = "#A29BFE",
-                    keywords = "release, released, релиз, update, v1., v2., v0., changelog, version"
-                ),
-                TagEntity(
-                    name = "Dolphin",
-                    colorHex = "#0ABDE3",
-                    keywords = "dolphin, gamecube, wii, gc/wii"
-                ),
-                TagEntity(
-                    name = "PPSSPP",
-                    colorHex = "#5F27CD",
-                    keywords = "ppsspp, psp, playstation portable"
-                ),
-                TagEntity(
-                    name = "Android",
-                    colorHex = "#10AC84",
-                    keywords = "android, snapdragon, mali, adreno, apk"
-                ),
-                TagEntity(
-                    name = "Оптимизация",
-                    colorHex = "#F368E0",
-                    keywords = "performance, fps, speed, оптимиз, boost, шейдеры, shader"
-                )
-            )
+            val defaultTags = getDefaultTagsList()
             tagDao.insertTags(defaultTags)
         }
+    }
+
+    suspend fun resetDefaultSources() = withContext(Dispatchers.IO) {
+        val defaultSources = getDefaultSourcesList()
+        for (source in defaultSources) {
+            val existing = sourceDao.getSourceByUrl(source.url)
+            if (existing == null) {
+                sourceDao.insertSource(source)
+            } else {
+                sourceDao.updateSource(existing.copy(isEnabled = true))
+            }
+        }
+    }
+
+    private fun getDefaultSourcesList(): List<SourceEntity> {
+        return listOf(
+            SourceEntity(
+                title = "Libretro & RetroArch Blog",
+                url = "https://www.libretro.com/index.php/feed/",
+                isEnabled = true
+            ),
+            SourceEntity(
+                title = "Reddit r/emulation",
+                url = "https://www.reddit.com/r/emulation/.rss",
+                isEnabled = true
+            ),
+            SourceEntity(
+                title = "Dolphin Emulator",
+                url = "https://dolphin-emu.org/blog/feeds/",
+                isEnabled = true
+            ),
+            SourceEntity(
+                title = "PPSSPP PSP Emulator",
+                url = "https://www.ppsspp.org/feed.xml",
+                isEnabled = true
+            ),
+            SourceEntity(
+                title = "RPCS3 PS3 Emulator",
+                url = "https://rpcs3.net/blog/feed/",
+                isEnabled = true
+            )
+        )
+    }
+
+    private fun getDefaultTagsList(): List<TagEntity> {
+        return listOf(
+            TagEntity(
+                name = "RetroArch",
+                colorHex = "#00D2D3",
+                keywords = "retroarch, libretro, core, cores"
+            ),
+            TagEntity(
+                name = "Winlator",
+                colorHex = "#FF9F43",
+                keywords = "winlator, box64, mobox, wine, x86"
+            ),
+            TagEntity(
+                name = "PS2",
+                colorHex = "#54A0FF",
+                keywords = "ps2, playstation 2, pcsx2, aethersx2, netherx2"
+            ),
+            TagEntity(
+                name = "Switch",
+                colorHex = "#FF6B6B",
+                keywords = "switch, yuzu, ryujinx, suyu, sudachi, nintendo switch"
+            ),
+            TagEntity(
+                name = "Windows-эмуляция",
+                colorHex = "#48DBFB",
+                keywords = "windows, winlator, dxvk, wine, x86, directx, direct3d"
+            ),
+            TagEntity(
+                name = "Гайд",
+                colorHex = "#1DD1A1",
+                keywords = "guide, tutorial, гайд, инструкция, how to, настройка, manual"
+            ),
+            TagEntity(
+                name = "Релиз",
+                colorHex = "#A29BFE",
+                keywords = "release, released, релиз, update, v1., v2., v0., changelog, version"
+            ),
+            TagEntity(
+                name = "Dolphin",
+                colorHex = "#0ABDE3",
+                keywords = "dolphin, gamecube, wii, gc/wii"
+            ),
+            TagEntity(
+                name = "PPSSPP",
+                colorHex = "#5F27CD",
+                keywords = "ppsspp, psp, playstation portable"
+            ),
+            TagEntity(
+                name = "Android",
+                colorHex = "#10AC84",
+                keywords = "android, snapdragon, mali, adreno, apk"
+            ),
+            TagEntity(
+                name = "Оптимизация",
+                colorHex = "#F368E0",
+                keywords = "performance, fps, speed, оптимиз, boost, шейдеры, shader"
+            )
+        )
     }
 
     suspend fun refreshAllFeeds(): Result<Int> = withContext(Dispatchers.IO) {
@@ -219,8 +249,11 @@ class NewsRepository(
                 }
             }
 
-            if (errors.isNotEmpty() && newArticlesCount == 0) {
-                Result.failure(Exception("Ошибки при обновлении: ${errors.joinToString("; ")}"))
+            // Always update lastRefreshAt timestamp when refresh finishes
+            userPreferencesRepository.setLastRefreshAt(System.currentTimeMillis())
+
+            if (errors.isNotEmpty()) {
+                Result.failure(Exception("Ошибка сети при обновлении: ${errors.joinToString("; ")}"))
             } else {
                 Result.success(newArticlesCount)
             }
@@ -349,6 +382,107 @@ class NewsRepository(
 
     suspend fun translateText(text: String): Result<String> {
         return translationService.translateToRussian(text)
+    }
+
+    // --- Configuration Export & Import (Task 1) ---
+    suspend fun exportConfiguration(selectedTagIds: Set<Long>): String = withContext(Dispatchers.IO) {
+        val sources = sourceDao.getAllSourcesSync().map {
+            ExportedSource(title = it.title, url = it.url, isEnabled = it.isEnabled)
+        }
+        val tags = tagDao.getAllTagsSync().map {
+            ExportedTag(name = it.name, colorHex = it.colorHex, keywords = it.keywords)
+        }
+
+        val allTagsMap = tagDao.getAllTagsSync().associateBy { it.id }
+        val selectedTagNames = selectedTagIds.mapNotNull { allTagsMap[it]?.name }
+
+        val newsWithTagsList = newsDao.getAllNewsWithTagsSync()
+        val articleTags = newsWithTagsList.filter { it.tags.isNotEmpty() }.map { nwt ->
+            ExportedArticleTags(
+                guid = nwt.news.guid,
+                tagNames = nwt.tags.map { it.name }
+            )
+        }
+
+        val config = ExportedConfig(
+            version = 1,
+            app = "DiardNews",
+            exportedAt = System.currentTimeMillis(),
+            sources = sources,
+            tags = tags,
+            selectedTagNames = selectedTagNames,
+            articleTags = articleTags
+        )
+
+        ConfigExporter.serializeToJson(config)
+    }
+
+    suspend fun importConfiguration(jsonString: String): Result<ImportResult> = withContext(Dispatchers.IO) {
+        val parseResult = ConfigExporter.deserializeFromJson(jsonString)
+        if (parseResult.isFailure) {
+            return@withContext Result.failure(parseResult.exceptionOrNull() ?: Exception("Ошибка разбора"))
+        }
+
+        val config = parseResult.getOrThrow()
+        var importedSourcesCount = 0
+        var importedTagsCount = 0
+        var linkedArticleTagsCount = 0
+
+        // Merge sources without duplicates
+        for (src in config.sources) {
+            val existing = sourceDao.getSourceByUrl(src.url)
+            if (existing == null) {
+                sourceDao.insertSource(
+                    SourceEntity(title = src.title, url = src.url, isEnabled = src.isEnabled)
+                )
+                importedSourcesCount++
+            } else {
+                sourceDao.updateSource(existing.copy(title = src.title, isEnabled = src.isEnabled))
+            }
+        }
+
+        // Merge tags without duplicates
+        for (t in config.tags) {
+            val existing = tagDao.getTagByName(t.name)
+            if (existing == null) {
+                tagDao.insertTag(
+                    TagEntity(name = t.name, colorHex = t.colorHex, keywords = t.keywords)
+                )
+                importedTagsCount++
+            } else {
+                val updatedKeywords = if (t.keywords.isNotBlank()) t.keywords else existing.keywords
+                tagDao.updateTag(existing.copy(colorHex = t.colorHex, keywords = updatedKeywords))
+            }
+        }
+
+        // Merge article tags
+        for (at in config.articleTags) {
+            val news = newsDao.getNewsByGuid(at.guid)
+            if (news != null) {
+                for (tagName in at.tagNames) {
+                    var tag = tagDao.getTagByName(tagName)
+                    if (tag == null) {
+                        val newId = tagDao.insertTag(
+                            TagEntity(name = tagName, colorHex = getRandomColorHex(tagName))
+                        )
+                        tag = tagDao.getTagById(newId)
+                    }
+                    if (tag != null) {
+                        val rowId = newsDao.insertNewsTagCrossRef(NewsTagCrossRef(news.id, tag.id))
+                        if (rowId > 0) linkedArticleTagsCount++
+                    }
+                }
+            }
+        }
+
+        Result.success(
+            ImportResult(
+                sourcesCount = importedSourcesCount,
+                tagsCount = importedTagsCount,
+                articleTagsCount = linkedArticleTagsCount,
+                restoredSelectedTags = config.selectedTagNames
+            )
+        )
     }
 
     private fun findAutoTags(title: String, text: String, availableTags: List<TagEntity>): List<TagEntity> {

@@ -190,6 +190,67 @@ fun HelpScreen(
                 }
             }
 
+            // "Что нового в 0.0.2" Section
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+                    ),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("whats_new_002_card")
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Что нового в версии 0.0.2",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Обновление функционала и стабильности",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        val changelogItems = listOf(
+                            "💾 Экспорт и импорт (JSON via SAF): Быстрый перенос источников, тегов, авто-правил и связок статей через системный диалог файлов.",
+                            "⏱️ Индикатор последнего обновления: В шапке ленты теперь наглядно отображается время последней синхронизации с сохранением в DataStore.",
+                            "📭 Улучшенные пустые экраны (Empty States): Подсказки и удобные кнопки быстрого перехода при отсутствии источников, фильтров или тегов.",
+                            "🛡️ Сетевой статус: Ошибки сети не сбрасывают ленту — сохранённые новости всегда доступны оффлайн с ненавязчивым предупреждением."
+                        )
+
+                        changelogItems.forEach { itemText ->
+                            Text(
+                                text = "• $itemText",
+                                style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
             items(sections) { section ->
                 HelpSectionCard(section = section)
             }

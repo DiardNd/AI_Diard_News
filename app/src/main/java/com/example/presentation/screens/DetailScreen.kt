@@ -97,19 +97,22 @@ fun DetailScreen(
 
     val isShowingRussian = translation != null && translation.isShowingRussian
 
-    val displayTitle = if (isShowingRussian && translation?.titleRu?.isNotBlank() == true) {
-        translation.titleRu
-    } else {
-        article.title
+    val displayTitle = remember(article.title, isShowingRussian, translation) {
+        val raw = if (isShowingRussian && translation?.titleRu?.isNotBlank() == true) {
+            translation.titleRu
+        } else {
+            article.title
+        }
+        RssParser.cleanHtml(raw)
     }
 
     val cleanContent = remember(article.content, article.summary, isShowingRussian, translation) {
-        if (isShowingRussian && translation?.contentRu?.isNotBlank() == true) {
+        val raw = if (isShowingRussian && translation?.contentRu?.isNotBlank() == true) {
             translation.contentRu
         } else {
-            val raw = if (article.content.isNotBlank()) article.content else article.summary
-            RssParser.cleanHtml(raw)
+            if (article.content.isNotBlank()) article.content else article.summary
         }
+        RssParser.cleanHtml(raw)
     }
 
     Scaffold(

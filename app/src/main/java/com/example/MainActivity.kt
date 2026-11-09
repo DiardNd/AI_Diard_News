@@ -30,8 +30,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.domain.model.NewsArticle
@@ -43,6 +45,9 @@ import com.example.presentation.screens.HelpScreen
 import com.example.presentation.screens.SourcesScreen
 import com.example.presentation.viewmodel.NewsViewModel
 import com.example.ui.theme.MyApplicationTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
@@ -64,6 +69,8 @@ fun DiardNewsApp(viewModel: NewsViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Feed) }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(uiState.userMessage) {
         val msg = uiState.userMessage
@@ -142,9 +149,11 @@ fun DiardNewsApp(viewModel: NewsViewModel) {
                         },
                         onOpenFilters = { currentScreen = Screen.Filters },
                         onOpenHelp = { currentScreen = Screen.Help },
+                        onNavigateToSources = { currentScreen = Screen.Sources },
                         onToggleTag = { tagId -> viewModel.toggleTagFilter(tagId) },
                         onClearTagFilters = { viewModel.clearTagFilters() },
                         onSearchQueryChange = { q -> viewModel.setSearchQuery(q) },
+                        onDismissNetworkError = { viewModel.clearNetworkError() },
                         modifier = Modifier.padding(innerPadding)
                     )
                 }
@@ -157,6 +166,40 @@ fun DiardNewsApp(viewModel: NewsViewModel) {
                             viewModel.addSource(title, url, onComplete)
                         },
                         onDeleteSource = { id -> viewModel.deleteSource(id) },
+                        onRestorePresets = { viewModel.resetDefaultSources() },
+                        onExportToUri = { uri ->
+                            coroutineScope.launch {
+                                try {
+                                    val json = viewModel.exportConfigJson()
+                                    withContext(Dispatchers.IO) {
+                                        context.contentResolver.openOutputStream(uri)?.use { stream ->
+                                            stream.write(json.toByteArray(Charsets.UTF_8))
+                                        }
+                                    }
+                                    snackbarHostState.showSnackbar("Конфигурация успешно экспортирована")
+                                } catch (e: Exception) {
+                                    snackbarHostState.showSnackbar("Ошибка экспорта: ${e.message}")
+                                }
+                            }
+                        },
+                        onImportFromUri = { uri ->
+                            coroutineScope.launch {
+                                try {
+                                    val json = withContext(Dispatchers.IO) {
+                                        context.contentResolver.openInputStream(uri)?.use { stream ->
+                                            stream.bufferedReader(Charsets.UTF_8).readText()
+                                        }
+                                    }
+                                    if (json != null) {
+                                        viewModel.importConfigJson(json)
+                                    } else {
+                                        snackbarHostState.showSnackbar("Не удалось прочитать выбранный файл")
+                                    }
+                                } catch (e: Exception) {
+                                    snackbarHostState.showSnackbar("Ошибка импорта: ${e.message}")
+                                }
+                            }
+                        },
                         modifier = Modifier.padding(innerPadding)
                     )
                 }

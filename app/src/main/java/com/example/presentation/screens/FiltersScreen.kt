@@ -164,15 +164,26 @@ fun FiltersScreen(
             }
         }
 
-        // Tags List
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .weight(1f)
-                .testTag("tags_filter_list"),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        // Tags List or Empty State
+        if (uiState.tags.isEmpty()) {
+            com.example.presentation.components.EmptyStateView(
+                icon = Icons.Default.FilterAlt,
+                title = "Нет доступных тегов",
+                description = "В приложении пока нет созданных тегов. Добавьте свой первый тег и настройте для него ключевые слова авто-поиска.",
+                actionText = "Создать тег",
+                onActionClick = { isCreatingTag = true },
+                modifier = Modifier.weight(1f),
+                testTag = "empty_state_tags"
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .weight(1f)
+                    .testTag("tags_filter_list"),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
             items(
                 items = uiState.tags,
                 key = { it.id }
@@ -279,6 +290,7 @@ fun FiltersScreen(
                 }
             }
         }
+    }
 
         // Bottom Apply Button
         Box(

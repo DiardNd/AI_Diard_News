@@ -26,6 +26,13 @@ object RssParser {
 
     private val IMG_PATTERN = Pattern.compile("<img[^>]+src\\s*=\\s*['\"]([^'\"]+)['\"]", Pattern.CASE_INSENSITIVE)
     private val HTML_TAG_PATTERN = Pattern.compile("<[^>]+>")
+    private val BR_TAG_REGEX = Regex("(?i)<br\\s*/?>")
+    private val P_CLOSE_REGEX = Regex("(?i)</p>")
+    private val DIV_CLOSE_REGEX = Regex("(?i)</div>")
+    private val LI_CLOSE_REGEX = Regex("(?i)</li>")
+    private val HEADING_CLOSE_REGEX = Regex("(?i)</h[1-6]>")
+    private val NUMERIC_ENTITY_REGEX = Regex("&#(\\d+);")
+    private val HEX_ENTITY_REGEX = Regex("(?i)&#x([0-9a-f]+);")
 
     fun parse(xmlString: String): ParsedFeed {
         val parser = Xml.newPullParser()
@@ -237,17 +244,78 @@ object RssParser {
     }
 
     fun cleanHtml(rawHtml: String): String {
-        if (rawHtml.isEmpty()) return ""
-        val withoutTags = HTML_TAG_PATTERN.matcher(rawHtml).replaceAll(" ")
-        return withoutTags
-            .replace("&amp;", "&")
+        if (rawHtml.isBlank()) return ""
+
+        var text = rawHtml
+        // Preserve structure by turning block element closings into newlines
+        text = BR_TAG_REGEX.replace(text, "\n")
+        text = P_CLOSE_REGEX.replace(text, "\n\n")
+        text = DIV_CLOSE_REGEX.replace(text, "\n")
+        text = LI_CLOSE_REGEX.replace(text, "\n")
+        text = HEADING_CLOSE_REGEX.replace(text, "\n\n")
+
+        // Strip all remaining HTML tags
+        val withoutTags = HTML_TAG_PATTERN.matcher(text).replaceAll("")
+
+        // Decode HTML entities (run twice to resolve double-escaped entities like &amp;quot;)
+        val decodedOnce = decodeHtmlEntities(withoutTags)
+        val decoded = decodeHtmlEntities(decodedOnce)
+
+        // Normalize whitespace and blank lines while preserving paragraph spacing
+        val lines = decoded.split("\n")
+        val cleanedLines = lines.map { it.replace(Regex("[ \\t]+"), " ").trim() }
+        return cleanedLines.joinToString("\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
+    }
+
+    fun decodeHtmlEntities(input: String): String {
+        if (!input.contains("&")) return input
+
+        var text = input
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&#39;", "'")
+            .replace("&#039;", "'")
             .replace("&lt;", "<")
             .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&#39;", "'")
+            .replace("&amp;", "&")
             .replace("&nbsp;", " ")
-            .replace(Regex("\\s+"), " ")
-            .trim()
+            .replace("&laquo;", "«")
+            .replace("&raquo;", "»")
+            .replace("&mdash;", "—")
+            .replace("&ndash;", "–")
+            .replace("&hellip;", "…")
+            .replace("&#8216;", "'")
+            .replace("&#8217;", "'")
+            .replace("&#8220;", "\"")
+            .replace("&#8221;", "\"")
+            .replace("&bull;", "•")
+            .replace("&copy;", "©")
+            .replace("&reg;", "®")
+            .replace("&trade;", "™")
+
+        // Decimal numeric entities &#123;
+        text = NUMERIC_ENTITY_REGEX.replace(text) { matchResult ->
+            try {
+                val code = matchResult.groupValues[1].toInt()
+                Char(code).toString()
+            } catch (_: Exception) {
+                matchResult.value
+            }
+        }
+
+        // Hex numeric entities &#x7A;
+        text = HEX_ENTITY_REGEX.replace(text) { matchResult ->
+            try {
+                val code = matchResult.groupValues[1].toInt(16)
+                Char(code).toString()
+            } catch (_: Exception) {
+                matchResult.value
+            }
+        }
+
+        return text
     }
 
     private fun extractImageUrl(html: String): String? {

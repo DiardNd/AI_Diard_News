@@ -15,11 +15,12 @@ class TranslationService(
         .build()
 ) {
     suspend fun translateToRussian(text: String): Result<String> = withContext(Dispatchers.IO) {
-        if (text.isBlank()) return@withContext Result.success(text)
+        val cleanInput = RssParser.cleanHtml(text)
+        if (cleanInput.isBlank()) return@withContext Result.success(cleanInput)
 
         try {
             // Split into manageable chunks by paragraphs or punctuation if too large
-            val chunks = splitTextIntoChunks(text, 1200)
+            val chunks = splitTextIntoChunks(cleanInput, 1200)
             val translatedChunks = mutableListOf<String>()
 
             for (chunk in chunks) {
@@ -38,10 +39,12 @@ class TranslationService(
 
                 val body = response.body?.string() ?: ""
                 val translated = parseGoogleTranslateResponse(body)
-                translatedChunks.add(translated.ifEmpty { chunk })
+                val cleanTranslated = RssParser.cleanHtml(if (translated.isNotBlank()) translated else chunk)
+                translatedChunks.add(cleanTranslated)
             }
 
-            Result.success(translatedChunks.joinToString("\n\n"))
+            val finalCombined = RssParser.cleanHtml(translatedChunks.joinToString("\n\n"))
+            Result.success(finalCombined)
         } catch (e: Exception) {
             Result.failure(e)
         }

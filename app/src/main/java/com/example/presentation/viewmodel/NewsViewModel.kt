@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppDatabase
+import com.example.data.local.UserPreferencesRepository
+import com.example.data.remote.RssParser
 import com.example.data.repository.NewsRepository
 import com.example.domain.model.NewsArticle
 import com.example.domain.model.NewsSource
@@ -32,19 +34,26 @@ data class NewsFeedUiState(
     val isRefreshing: Boolean = false,
     val isTranslating: Boolean = false,
     val userMessage: String? = null,
+    val networkError: String? = null,
     val selectedArticle: NewsArticle? = null,
-    val translations: Map<Long, TranslatedArticle> = emptyMap()
+    val translations: Map<Long, TranslatedArticle> = emptyMap(),
+    val lastRefreshAt: Long = 0L
 )
 
 class NewsViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = NewsRepository(AppDatabase.getDatabase(application))
+    private val preferencesRepository = UserPreferencesRepository(application)
+    private val repository = NewsRepository(
+        database = AppDatabase.getDatabase(application),
+        userPreferencesRepository = preferencesRepository
+    )
 
     private val _selectedTagIds = MutableStateFlow<Set<Long>>(emptySet())
     private val _searchQuery = MutableStateFlow("")
     private val _isRefreshing = MutableStateFlow(false)
     private val _isTranslating = MutableStateFlow(false)
     private val _userMessage = MutableStateFlow<String?>(null)
+    private val _networkError = MutableStateFlow<String?>(null)
     private val _selectedArticleId = MutableStateFlow<Long?>(null)
     private val _translations = MutableStateFlow<Map<Long, TranslatedArticle>>(emptyMap())
 
@@ -87,22 +96,23 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         _isRefreshing,
         _isTranslating,
         _userMessage,
-        _selectedArticleId,
-        _translations
-    ) { refreshing: Boolean, translating: Boolean, msg: String?, articleId: Long?, translations: Map<Long, TranslatedArticle> ->
-        StateBundle(refreshing, translating, msg, articleId, translations)
+        _networkError,
+        repository.lastRefreshAt
+    ) { refreshing: Boolean, translating: Boolean, msg: String?, netErr: String?, refreshAt: Long ->
+        ExtraStateBundle(refreshing, translating, msg, netErr, refreshAt)
     }
 
     val uiState: StateFlow<NewsFeedUiState> = combine(
         filteredData,
         extraState,
-        _selectedTagIds,
-        _searchQuery
-    ) { data, extra, selectedTags, query ->
+        _selectedArticleId,
+        _translations,
+        _selectedTagIds
+    ) { data, extra, articleId, translations, selectedTags ->
         val (allNews, filteredArticles, sourcesAndTags) = data
         val (sources, tags) = sourcesAndTags
 
-        val selectedArticle = extra.articleId?.let { id ->
+        val selectedArticle = articleId?.let { id ->
             allNews.firstOrNull { it.id == id }
         }
 
@@ -111,12 +121,14 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
             sources = sources,
             tags = tags,
             selectedTagIds = selectedTags,
-            searchQuery = query,
+            searchQuery = _searchQuery.value,
             isRefreshing = extra.isRefreshing,
             isTranslating = extra.isTranslating,
             userMessage = extra.userMessage,
+            networkError = extra.networkError,
             selectedArticle = selectedArticle,
-            translations = extra.translations
+            translations = translations,
+            lastRefreshAt = extra.lastRefreshAt
         )
     }.stateIn(
         scope = viewModelScope,
@@ -137,13 +149,14 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
             val result = repository.refreshAllFeeds()
             _isRefreshing.value = false
             if (result.isSuccess) {
+                _networkError.value = null
                 val count = result.getOrDefault(0)
                 if (count > 0) {
                     _userMessage.value = "Загружено новых новостей: $count"
                 }
             } else {
-                val err = result.exceptionOrNull()?.message ?: "Ошибка сети при загрузке"
-                _userMessage.value = "Не удалось обновить: $err"
+                val err = result.exceptionOrNull()?.message ?: "Сетевая ошибка"
+                _networkError.value = err
             }
         }
     }
@@ -173,6 +186,14 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.deleteSource(sourceId)
             _userMessage.value = "Источник удален"
+        }
+    }
+
+    fun resetDefaultSources() {
+        viewModelScope.launch {
+            repository.resetDefaultSources()
+            _userMessage.value = "Стандартные источники восстановлены"
+            refreshFeeds()
         }
     }
 
@@ -210,7 +231,6 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleArticleTranslation(article: NewsArticle) {
         val existing = _translations.value[article.id]
         if (existing != null) {
-            // Toggle between Russian and original
             _translations.update { map ->
                 map + (article.id to existing.copy(isShowingRussian = !existing.isShowingRussian))
             }
@@ -219,17 +239,27 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             _isTranslating.value = true
-            val titleResult = repository.translateText(article.title)
-            val summaryResult = if (article.summary.isNotBlank()) repository.translateText(article.summary) else Result.success("")
-            val contentResult = if (article.content.isNotBlank()) repository.translateText(article.content) else Result.success("")
+            val cleanTitle = RssParser.cleanHtml(article.title)
+            val cleanSummary = RssParser.cleanHtml(article.summary)
+            val cleanContent = RssParser.cleanHtml(
+                if (article.content.isNotBlank()) article.content else article.summary
+            )
+
+            val titleResult = repository.translateText(cleanTitle)
+            val summaryResult = if (cleanSummary.isNotBlank()) repository.translateText(cleanSummary) else Result.success("")
+            val contentResult = if (cleanContent.isNotBlank()) repository.translateText(cleanContent) else Result.success("")
 
             _isTranslating.value = false
 
             if (titleResult.isSuccess) {
+                val cleanTitleRu = RssParser.cleanHtml(titleResult.getOrDefault(cleanTitle))
+                val cleanSummaryRu = RssParser.cleanHtml(summaryResult.getOrDefault(cleanSummary))
+                val cleanContentRu = RssParser.cleanHtml(contentResult.getOrDefault(cleanContent))
+
                 val translated = TranslatedArticle(
-                    titleRu = titleResult.getOrDefault(article.title),
-                    summaryRu = summaryResult.getOrDefault(article.summary),
-                    contentRu = contentResult.getOrDefault(article.content),
+                    titleRu = cleanTitleRu,
+                    summaryRu = cleanSummaryRu,
+                    contentRu = cleanContentRu,
                     isShowingRussian = true
                 )
                 _translations.update { it + (article.id to translated) }
@@ -274,15 +304,49 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // --- Configuration Export & Import (Task 1) ---
+    suspend fun exportConfigJson(): String {
+        return repository.exportConfiguration(_selectedTagIds.value)
+    }
+
+    fun importConfigJson(jsonString: String) {
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            val result = repository.importConfiguration(jsonString)
+            _isRefreshing.value = false
+
+            if (result.isSuccess) {
+                val res = result.getOrThrow()
+                // Restore selected tags if matching tags exist
+                if (res.restoredSelectedTags.isNotEmpty()) {
+                    val allTags = uiState.value.tags
+                    val idsToSelect = allTags.filter { it.name in res.restoredSelectedTags }.map { it.id }.toSet()
+                    if (idsToSelect.isNotEmpty()) {
+                        _selectedTagIds.value = idsToSelect
+                    }
+                }
+                _userMessage.value = "Импорт успешен: источников +${res.sourcesCount}, тегов +${res.tagsCount}"
+                refreshFeeds()
+            } else {
+                val errorMsg = result.exceptionOrNull()?.message ?: "Не удалось импортировать файл"
+                _userMessage.value = "Ошибка импорта: $errorMsg"
+            }
+        }
+    }
+
+    fun clearNetworkError() {
+        _networkError.value = null
+    }
+
     fun clearUserMessage() {
         _userMessage.value = null
     }
 
-    private data class StateBundle(
+    private data class ExtraStateBundle(
         val isRefreshing: Boolean,
         val isTranslating: Boolean,
         val userMessage: String?,
-        val articleId: Long?,
-        val translations: Map<Long, TranslatedArticle>
+        val networkError: String?,
+        val lastRefreshAt: Long
     )
 }

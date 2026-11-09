@@ -23,14 +23,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.FilterListOff
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SportsEsports
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -44,17 +49,23 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.domain.model.NewsArticle
+import com.example.presentation.components.EmptyStateView
 import com.example.presentation.components.NewsCard
 import com.example.presentation.viewmodel.NewsFeedUiState
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -64,12 +75,31 @@ fun FeedScreen(
     onArticleClick: (NewsArticle) -> Unit,
     onOpenFilters: () -> Unit,
     onOpenHelp: () -> Unit,
+    onNavigateToSources: () -> Unit,
     onToggleTag: (Long) -> Unit,
     onClearTagFilters: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
+    onDismissNetworkError: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val pullRefreshState = rememberPullToRefreshState()
+
+    // Periodic ticker to keep the relative last refresh time updated on screen
+    var currentClock by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000)
+            currentClock = System.currentTimeMillis()
+        }
+    }
+
+    val relativeRefreshTime = remember(uiState.lastRefreshAt, currentClock) {
+        formatRelativeRefreshTime(uiState.lastRefreshAt)
+    }
+
+    val anySourceEnabled = remember(uiState.sources) {
+        uiState.sources.any { it.isEnabled }
+    }
 
     Column(
         modifier = modifier
@@ -80,14 +110,14 @@ fun FeedScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(38.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.primaryContainer),
                     contentAlignment = Alignment.Center
@@ -96,7 +126,7 @@ fun FeedScreen(
                         imageVector = Icons.Default.SportsEsports,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(22.dp)
                     )
                 }
                 Spacer(modifier = Modifier.width(10.dp))
@@ -106,10 +136,12 @@ fun FeedScreen(
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                    // Last refresh indicator
                     Text(
-                        text = "Новости эмуляции и ретрогейминга",
+                        text = "Обновлено: $relativeRefreshTime",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.testTag("last_refresh_indicator")
                     )
                 }
             }
@@ -170,6 +202,58 @@ fun FeedScreen(
             }
         }
 
+        // Network error non-blocking banner
+        AnimatedVisibility(visible = uiState.networkError != null) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f)
+                ),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .testTag("network_error_banner")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.WifiOff,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Ошибка сети — показаны сохранённые новости",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onDismissNetworkError,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Закрыть",
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+        }
+
         // Search bar
         OutlinedTextField(
             value = uiState.searchQuery,
@@ -212,7 +296,7 @@ fun FeedScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(scrollState)
-                .padding(horizontal = 16.dp, vertical = 6.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -247,7 +331,7 @@ fun FeedScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .padding(horizontal = 16.dp, vertical = 2.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
                     .padding(horizontal = 12.dp, vertical = 6.dp),
@@ -255,7 +339,7 @@ fun FeedScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "Найдено: ${uiState.articles.size}",
+                    text = "Найдено статей: ${uiState.articles.size}",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -275,7 +359,7 @@ fun FeedScreen(
             }
         }
 
-        // News List with Pull-to-Refresh
+        // News List with Pull-to-Refresh & Dedicated Empty States
         PullToRefreshBox(
             isRefreshing = uiState.isRefreshing,
             onRefresh = onRefresh,
@@ -284,73 +368,96 @@ fun FeedScreen(
                 .fillMaxSize()
                 .weight(1f)
         ) {
-            if (uiState.articles.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(32.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+            when {
+                // Empty state 1: No sources are enabled
+                !anySourceEnabled -> {
+                    EmptyStateView(
+                        icon = Icons.Default.RssFeed,
+                        title = "Нет включённых источников",
+                        description = "Все добавленные источники отключены переключателем. Включите хотя бы один источник, чтобы читать новости.",
+                        actionText = "Перейти в Источники",
+                        onActionClick = onNavigateToSources,
+                        testTag = "empty_state_no_sources"
+                    )
+                }
+
+                // Empty state 2: Sources exist, but filter/search yielded 0 articles
+                uiState.articles.isEmpty() && !uiState.isRefreshing -> {
+                    EmptyStateView(
+                        icon = Icons.Default.FilterListOff,
+                        title = "Нет новостей по выбранным фильтрам",
+                        description = "По выбранным тегам или поисковому запросу новости не найдены. Попробуйте сбросить фильтры или обновить ленту.",
+                        actionText = "Сбросить фильтры",
+                        onActionClick = {
+                            onClearTagFilters()
+                            onSearchQueryChange("")
+                        },
+                        secondaryActionText = "Обновить ленту",
+                        onSecondaryActionClick = onRefresh,
+                        testTag = "empty_state_filtered"
+                    )
+                }
+
+                // Loading initial articles
+                uiState.articles.isEmpty() && uiState.isRefreshing -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.SportsEsports,
-                            contentDescription = null,
-                            modifier = Modifier.size(64.dp),
-                            tint = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = if (uiState.isRefreshing) "Обновление новостей..." else "Нет новостей по вашему фильтру",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            textAlign = TextAlign.Center
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = if (uiState.isRefreshing) {
-                                "Загружаем свежие данные из включённых источников"
-                            } else {
-                                "Попробуйте выбрать другие теги, проверить включённые источники или обновить ленту"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
-                        )
-                        if (!uiState.isRefreshing && (uiState.selectedTagIds.isNotEmpty() || uiState.searchQuery.isNotEmpty())) {
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Button(
-                                onClick = {
-                                    onClearTagFilters()
-                                    onSearchQueryChange("")
-                                }
-                            ) {
-                                Text("Показать все новости")
-                            }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(modifier = Modifier.size(36.dp))
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text(
+                                text = "Загружаем свежие новости...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("news_feed_list"),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 80.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    items(
-                        items = uiState.articles,
-                        key = { it.id }
-                    ) { article ->
-                        NewsCard(
-                            article = article,
-                            onClick = { onArticleClick(article) }
-                        )
+
+                // News list content
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("news_feed_list"),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 80.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        items(
+                            items = uiState.articles,
+                            key = { it.id }
+                        ) { article ->
+                            NewsCard(
+                                article = article,
+                                onClick = { onArticleClick(article) }
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+fun formatRelativeRefreshTime(timestamp: Long): String {
+    if (timestamp <= 0L) return "не обновлялось"
+    val now = System.currentTimeMillis()
+    val diff = now - timestamp
+    if (diff < 0) return "только что"
+
+    val seconds = diff / 1000
+    val minutes = seconds / 60
+    val hours = minutes / 60
+    val days = hours / 24
+
+    return when {
+        minutes < 1 -> "только что"
+        minutes < 60 -> "$minutes мин назад"
+        hours < 24 -> "$hours ч назад"
+        days == 1L -> "вчера"
+        days < 7 -> "$days дн назад"
+        else -> "более недели назад"
     }
 }

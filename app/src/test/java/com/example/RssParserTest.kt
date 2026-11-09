@@ -72,4 +72,18 @@ class RssParserTest {
         val cleaned = RssParser.cleanHtml(html)
         assertEquals("This is bold & italic with links !", cleaned)
     }
+
+    @Test
+    fun testCleanHtmlWithFormattingAndEntities() {
+        val raw = "<p>Winlator 8.0 <strong>released</strong>!</p><p>Fixed <em>DirectX</em> rendering &amp; &quot;audio&#39; glitches &mdash; works on Android.</p>"
+        val cleaned = RssParser.cleanHtml(raw)
+        assertEquals("Winlator 8.0 released!\n\nFixed DirectX rendering & \"audio' glitches — works on Android.", cleaned)
+    }
+
+    @Test
+    fun testCleanDoubleEncodedEntities() {
+        val doubleEncoded = "&amp;quot;Title in quotes&amp;quot; and &amp;#39;apostrophe&amp;#39;"
+        val cleaned = RssParser.cleanHtml(doubleEncoded)
+        assertEquals("\"Title in quotes\" and 'apostrophe'", cleaned)
+    }
 }
