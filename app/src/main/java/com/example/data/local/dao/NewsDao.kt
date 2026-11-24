@@ -60,4 +60,34 @@ interface NewsDao {
 
     @Query("SELECT COUNT(*) FROM news")
     suspend fun count(): Int
+
+    @Query("SELECT COUNT(*) FROM news WHERE sourceId = :sourceId")
+    suspend fun countForSource(sourceId: Long): Int
+
+    @Query(
+        """
+        DELETE FROM news
+        WHERE sourceId = :sourceId
+          AND id NOT IN (
+            SELECT id FROM news
+            WHERE sourceId = :sourceId
+            ORDER BY pubDate DESC, id DESC
+            LIMIT :limit
+          )
+        """
+    )
+    suspend fun trimOldNewsForSource(sourceId: Long, limit: Int)
+
+    @Query(
+        """
+        SELECT * FROM news
+        WHERE titleRu IS NULL OR summaryRu IS NULL
+        ORDER BY pubDate DESC, id DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun getUntranslatedNews(limit: Int): List<NewsEntity>
+
+    @Query("UPDATE news SET titleRu = :titleRu, summaryRu = :summaryRu WHERE id = :newsId")
+    suspend fun updateNewsPreviewTranslation(newsId: Long, titleRu: String?, summaryRu: String?)
 }

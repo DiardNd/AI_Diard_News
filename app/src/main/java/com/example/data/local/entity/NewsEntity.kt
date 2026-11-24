@@ -32,5 +32,7 @@ data class NewsEntity(
     val link: String,
     val imageUrl: String? = null,
     val pubDate: Long,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val titleRu: String? = null,
+    val summaryRu: String? = null
 )

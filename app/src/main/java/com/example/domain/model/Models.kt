@@ -26,5 +26,7 @@ data class NewsArticle(
     val link: String,
     val imageUrl: String?,
     val pubDate: Long,
-    val tags: List<TagItem> = emptyList()
+    val tags: List<TagItem> = emptyList(),
+    val titleRu: String? = null,
+    val summaryRu: String? = null
 )

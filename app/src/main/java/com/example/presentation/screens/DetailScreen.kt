@@ -2,6 +2,7 @@ package com.example.presentation.screens
 
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
@@ -21,11 +22,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.Share
@@ -57,12 +60,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.example.data.remote.RssParser
 import com.example.domain.model.NewsArticle
@@ -87,8 +93,20 @@ fun DetailScreen(
     BackHandler { onBack() }
 
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     var showAddTagDialog by remember { mutableStateOf(false) }
     var newTagName by remember { mutableStateOf("") }
+
+    val imageRequest = remember(article.imageUrl, context) {
+        ImageRequest.Builder(context)
+            .data(article.imageUrl)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCacheKey(article.imageUrl)
+            .memoryCacheKey(article.imageUrl)
+            .crossfade(true)
+            .build()
+    }
 
     val fullFormattedDate = remember(article.pubDate) {
         val sdf = SimpleDateFormat("dd MMMM yyyy, HH:mm", Locale.getDefault())
@@ -140,6 +158,16 @@ fun DetailScreen(
                                 tint = if (isShowingRussian) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                    }
+
+                    IconButton(
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString("$displayTitle\n\n$cleanContent"))
+                            Toast.makeText(context, "Текст новости скопирован", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.testTag("detail_copy_button")
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Копировать текст")
                     }
 
                     IconButton(
@@ -285,12 +313,14 @@ fun DetailScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Title
-            Text(
-                text = displayTitle,
-                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.onSurface
-            )
+            // Selectable Title
+            SelectionContainer {
+                Text(
+                    text = displayTitle,
+                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
 
             Spacer(modifier = Modifier.height(14.dp))
 
@@ -304,10 +334,7 @@ fun DetailScreen(
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     AsyncImage(
-                        model = ImageRequest.Builder(LocalContext.current)
-                            .data(article.imageUrl)
-                            .crossfade(true)
-                            .build(),
+                        model = imageRequest,
                         contentDescription = "Изображение новости",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxWidth()
@@ -359,12 +386,14 @@ fun DetailScreen(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // Content text
-            Text(
-                text = cleanContent,
-                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 24.sp),
-                color = MaterialTheme.colorScheme.onSurface
-            )
+            // Selectable Content text
+            SelectionContainer {
+                Text(
+                    text = cleanContent,
+                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 24.sp),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
 
             Spacer(modifier = Modifier.height(28.dp))
 

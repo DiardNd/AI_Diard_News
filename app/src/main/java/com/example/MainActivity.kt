@@ -12,12 +12,10 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.DynamicFeed
-import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.RssFeed
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -40,9 +38,9 @@ import com.example.domain.model.NewsArticle
 import com.example.presentation.navigation.Screen
 import com.example.presentation.screens.DetailScreen
 import com.example.presentation.screens.FeedScreen
-import com.example.presentation.screens.FiltersScreen
 import com.example.presentation.screens.HelpScreen
 import com.example.presentation.screens.SourcesScreen
+import com.example.presentation.screens.TagsScreen
 import com.example.presentation.viewmodel.NewsViewModel
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.Dispatchers
@@ -105,21 +103,13 @@ fun DiardNewsApp(viewModel: NewsViewModel) {
                     )
 
                     NavigationBarItem(
-                        selected = currentScreen is Screen.Filters,
-                        onClick = { currentScreen = Screen.Filters },
+                        selected = currentScreen is Screen.Tags,
+                        onClick = { currentScreen = Screen.Tags },
                         icon = {
-                            BadgedBox(
-                                badge = {
-                                    if (uiState.selectedTagIds.isNotEmpty()) {
-                                        Badge { Text("${uiState.selectedTagIds.size}") }
-                                    }
-                                }
-                            ) {
-                                Icon(Icons.Default.FilterList, contentDescription = "Фильтры")
-                            }
+                            Icon(Icons.AutoMirrored.Filled.Label, contentDescription = "Теги")
                         },
-                        label = { Text("Фильтры") },
-                        modifier = Modifier.testTag("nav_tab_filters")
+                        label = { Text("Теги") },
+                        modifier = Modifier.testTag("nav_tab_tags")
                     )
 
                     NavigationBarItem(
@@ -147,11 +137,11 @@ fun DiardNewsApp(viewModel: NewsViewModel) {
                             viewModel.selectArticle(article.id)
                             currentScreen = Screen.Detail(article.id)
                         },
-                        onOpenFilters = { currentScreen = Screen.Filters },
+                        onOpenTags = { currentScreen = Screen.Tags },
                         onOpenHelp = { currentScreen = Screen.Help },
                         onNavigateToSources = { currentScreen = Screen.Sources },
-                        onToggleTag = { tagId -> viewModel.toggleTagFilter(tagId) },
-                        onClearTagFilters = { viewModel.clearTagFilters() },
+                        onToggleSourceFilter = { sourceId -> viewModel.toggleSourceFilter(sourceId) },
+                        onClearSourceFilters = { viewModel.clearSourceFilters() },
                         onSearchQueryChange = { q -> viewModel.setSearchQuery(q) },
                         onDismissNetworkError = { viewModel.clearNetworkError() },
                         modifier = Modifier.padding(innerPadding)
@@ -204,12 +194,9 @@ fun DiardNewsApp(viewModel: NewsViewModel) {
                     )
                 }
 
-                is Screen.Filters -> {
-                    FiltersScreen(
+                is Screen.Tags -> {
+                    TagsScreen(
                         uiState = uiState,
-                        onToggleTag = { tagId -> viewModel.toggleTagFilter(tagId) },
-                        onClearAll = { viewModel.clearTagFilters() },
-                        onApply = { currentScreen = Screen.Feed },
                         onSaveTag = { name, colorHex, keywords ->
                             viewModel.saveTag(name, colorHex, keywords)
                         },

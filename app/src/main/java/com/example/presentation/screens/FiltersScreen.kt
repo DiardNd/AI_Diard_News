@@ -19,24 +19,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.FilterAlt
-import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,15 +47,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.domain.model.TagItem
 import com.example.presentation.components.EditTagDialog
+import com.example.presentation.components.EmptyStateView
 import com.example.presentation.components.parseColor
 import com.example.presentation.viewmodel.NewsFeedUiState
 
 @Composable
-fun FiltersScreen(
+fun TagsScreen(
     uiState: NewsFeedUiState,
-    onToggleTag: (Long) -> Unit,
-    onClearAll: () -> Unit,
-    onApply: () -> Unit,
     onSaveTag: (name: String, colorHex: String, keywords: String) -> Unit,
     onDeleteTag: (Long) -> Unit,
     onReapplyAutoTags: () -> Unit,
@@ -72,7 +65,7 @@ fun FiltersScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .testTag("filters_screen")
+            .testTag("tags_screen")
     ) {
         // Status & Guide Card
         Card(
@@ -86,24 +79,20 @@ fun FiltersScreen(
             Column(modifier = Modifier.padding(14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Default.FilterAlt,
+                        imageVector = Icons.AutoMirrored.Filled.Label,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.secondary,
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Фильтры и правила авто-тегов",
+                        text = "Теги и правила авто-тегов",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = if (uiState.selectedTagIds.isEmpty()) {
-                        "Отображаются ВСЕ новости. Отметьте теги галочками, чтобы фильтровать ленту. Вы также можете настраивать ключевые слова для авто-тегирования."
-                    } else {
-                        "Выбрано тегов: ${uiState.selectedTagIds.size} из ${uiState.tags.size}. В ленте будут новости с любым из отмеченных тегов."
-                    },
+                    text = "Теги отображаются как визуальные метки в ленте и статьях. Здесь можно создавать, удалять теги и настраивать ключевые слова для авто-разметки.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -138,36 +127,25 @@ fun FiltersScreen(
             }
         }
 
-        // Action row: Clear filters
+        // Header row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Теги и ключевые слова (${uiState.tags.size})",
+                text = "Список тегов и ключевых слов (${uiState.tags.size})",
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
                 color = MaterialTheme.colorScheme.onSurface
             )
-
-            if (uiState.selectedTagIds.isNotEmpty()) {
-                TextButton(
-                    onClick = onClearAll,
-                    modifier = Modifier.testTag("clear_all_filters_button")
-                ) {
-                    Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Сбросить")
-                }
-            }
         }
 
         // Tags List or Empty State
         if (uiState.tags.isEmpty()) {
-            com.example.presentation.components.EmptyStateView(
-                icon = Icons.Default.FilterAlt,
+            EmptyStateView(
+                icon = Icons.AutoMirrored.Filled.Label,
                 title = "Нет доступных тегов",
                 description = "В приложении пока нет созданных тегов. Добавьте свой первый тег и настройте для него ключевые слова авто-поиска.",
                 actionText = "Создать тег",
@@ -180,133 +158,94 @@ fun FiltersScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .weight(1f)
-                    .testTag("tags_filter_list"),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp),
+                    .testTag("tags_management_list"),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-            items(
-                items = uiState.tags,
-                key = { it.id }
-            ) { tag ->
-                val isSelected = uiState.selectedTagIds.contains(tag.id)
-                val tagColor = parseColor(tag.colorHex)
+                items(
+                    items = uiState.tags,
+                    key = { it.id }
+                ) { tag ->
+                    val tagColor = parseColor(tag.colorHex)
 
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("filter_tag_card_${tag.id}"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isSelected) {
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                        }
-                    )
-                ) {
-                    Row(
+                    Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .clickable { editingTag = tag }
+                            .testTag("tag_item_card_${tag.id}"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        )
                     ) {
-                        Checkbox(
-                            checked = isSelected,
-                            onCheckedChange = { onToggleTag(tag.id) },
-                            colors = CheckboxDefaults.colors(
-                                checkedColor = MaterialTheme.colorScheme.primary
-                            ),
-                            modifier = Modifier.testTag("filter_checkbox_${tag.id}")
-                        )
-
-                        Box(
+                        Row(
                             modifier = Modifier
-                                .size(12.dp)
-                                .clip(CircleShape)
-                                .background(tagColor)
-                        )
-
-                        Spacer(modifier = Modifier.width(10.dp))
-
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable { onToggleTag(tag.id) }
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = tag.name,
-                                style = MaterialTheme.typography.bodyLarge.copy(
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
-                                ),
-                                color = MaterialTheme.colorScheme.onSurface
+                            Box(
+                                modifier = Modifier
+                                    .size(12.dp)
+                                    .clip(CircleShape)
+                                    .background(tagColor)
                             )
-                            if (tag.keywords.isNotBlank()) {
+
+                            Spacer(modifier = Modifier.width(12.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Ключевые слова: ${tag.keywords}",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    text = tag.name,
+                                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
-                            } else {
-                                Text(
-                                    text = "Автопоиск по имени тега",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                if (tag.keywords.isNotBlank()) {
+                                    Text(
+                                        text = "Ключевые слова: ${tag.keywords}",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                } else {
+                                    Text(
+                                        text = "Автопоиск по имени тега",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                    )
+                                }
+                            }
+
+                            IconButton(
+                                onClick = { editingTag = tag },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .testTag("edit_tag_button_${tag.id}")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = "Редактировать ключевые слова",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+
+                            IconButton(
+                                onClick = { onDeleteTag(tag.id) },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .testTag("delete_tag_button_${tag.id}")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteOutline,
+                                    contentDescription = "Удалить тег",
+                                    tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
-
-                        // Edit tag auto-keywords button
-                        IconButton(
-                            onClick = { editingTag = tag },
-                            modifier = Modifier
-                                .size(36.dp)
-                                .testTag("edit_tag_button_${tag.id}")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Edit,
-                                contentDescription = "Редактировать ключевые слова",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-
-                        // Delete tag button
-                        IconButton(
-                            onClick = { onDeleteTag(tag.id) },
-                            modifier = Modifier
-                                .size(36.dp)
-                                .testTag("delete_tag_button_${tag.id}")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.DeleteOutline,
-                                contentDescription = "Удалить тег",
-                                tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
                     }
                 }
-            }
-        }
-    }
-
-        // Bottom Apply Button
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Button(
-                onClick = onApply,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("apply_filters_button")
-            ) {
-                Icon(Icons.Default.Check, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Применить фильтры (${uiState.articles.size} новостей)")
             }
         }
     }

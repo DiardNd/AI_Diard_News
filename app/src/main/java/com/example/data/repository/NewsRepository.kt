@@ -13,15 +13,36 @@ import com.example.data.local.entity.NewsTagCrossRef
 import com.example.data.local.entity.SourceEntity
 import com.example.data.local.entity.TagEntity
 import com.example.data.remote.FeedFetcher
+import com.example.data.remote.RssParser
 import com.example.data.remote.TranslationService
 import com.example.domain.model.NewsArticle
 import com.example.domain.model.NewsSource
 import com.example.domain.model.TagItem
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.Locale
+
+data class FailedSourceInfo(
+    val sourceId: Long,
+    val sourceTitle: String,
+    val sourceUrl: String,
+    val errorMessage: String
+)
+
+data class RefreshFeedsResult(
+    val newArticlesCount: Int,
+    val totalSourcesCount: Int,
+    val successfulSourcesCount: Int,
+    val failedSources: List<FailedSourceInfo>
+)
 
 class NewsRepository(
     private val database: AppDatabase,
@@ -29,9 +50,18 @@ class NewsRepository(
     private val feedFetcher: FeedFetcher = FeedFetcher(),
     private val translationService: TranslationService = TranslationService()
 ) {
+    companion object {
+        const val MAX_ITEMS_PER_FEED_FETCH = 30
+        const val MAX_STORED_NEWS_PER_SOURCE = 50
+    }
+
     private val sourceDao = database.sourceDao()
     private val tagDao = database.tagDao()
     private val newsDao = database.newsDao()
+    private val translationMutex = Mutex()
+
+    private val _failedSources = MutableStateFlow<List<FailedSourceInfo>>(emptyList())
+    val failedSources: StateFlow<List<FailedSourceInfo>> = _failedSources.asStateFlow()
 
     val lastRefreshAt: Flow<Long> = userPreferencesRepository.lastRefreshAt
 
@@ -60,7 +90,9 @@ class NewsRepository(
                 link = newsWithTags.news.link,
                 imageUrl = newsWithTags.news.imageUrl,
                 pubDate = newsWithTags.news.pubDate,
-                tags = newsWithTags.tags.map { it.toDomain() }
+                tags = newsWithTags.tags.map { it.toDomain() },
+                titleRu = newsWithTags.news.titleRu,
+                summaryRu = newsWithTags.news.summaryRu
             )
         }
     }
@@ -79,7 +111,9 @@ class NewsRepository(
                     link = it.news.link,
                     imageUrl = it.news.imageUrl,
                     pubDate = it.news.pubDate,
-                    tags = it.tags.map { tag -> tag.toDomain() }
+                    tags = it.tags.map { tag -> tag.toDomain() },
+                    titleRu = it.news.titleRu,
+                    summaryRu = it.news.summaryRu
                 )
             }
         }
@@ -199,63 +233,116 @@ class NewsRepository(
         )
     }
 
-    suspend fun refreshAllFeeds(): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun refreshAllFeeds(): Result<RefreshFeedsResult> = withContext(Dispatchers.IO) {
         try {
             ensureDefaultData()
             val enabled = sourceDao.getEnabledSourcesSync()
             if (enabled.isEmpty()) {
-                return@withContext Result.success(0)
+                _failedSources.value = emptyList()
+                return@withContext Result.success(
+                    RefreshFeedsResult(
+                        newArticlesCount = 0,
+                        totalSourcesCount = 0,
+                        successfulSourcesCount = 0,
+                        failedSources = emptyList()
+                    )
+                )
             }
 
             val allDbTags = tagDao.getAllTagsSync()
             var newArticlesCount = 0
-            val errors = mutableListOf<String>()
+            var successfulSourcesCount = 0
+            val failedList = mutableListOf<FailedSourceInfo>()
 
             for (source in enabled) {
                 val fetchResult = feedFetcher.fetchFeed(source.url)
                 if (fetchResult.isFailure) {
-                    val msg = fetchResult.exceptionOrNull()?.message ?: "Ошибка"
-                    errors.add("${source.title}: $msg")
+                    val msg = fetchResult.exceptionOrNull()?.message ?: "Ошибка загрузки"
+                    failedList.add(
+                        FailedSourceInfo(
+                            sourceId = source.id,
+                            sourceTitle = source.title,
+                            sourceUrl = source.url,
+                            errorMessage = msg
+                        )
+                    )
                     continue
                 }
 
-                val feed = fetchResult.getOrNull() ?: continue
-                for (item in feed.items) {
-                    val existingByGuid = newsDao.getNewsByGuid(item.guid)
-                    val existingByLink = if (existingByGuid == null) newsDao.getNewsByLink(item.link) else null
-
-                    if (existingByGuid == null && existingByLink == null) {
-                        val newsEntity = NewsEntity(
+                val feed = fetchResult.getOrNull()
+                if (feed == null) {
+                    failedList.add(
+                        FailedSourceInfo(
                             sourceId = source.id,
-                            guid = item.guid,
-                            title = item.title,
-                            summary = item.description,
-                            content = item.content,
-                            link = item.link,
-                            imageUrl = item.imageUrl,
-                            pubDate = item.pubDate
+                            sourceTitle = source.title,
+                            sourceUrl = source.url,
+                            errorMessage = "Пустой ответ ленты"
                         )
-                        val insertedId = newsDao.insertNews(newsEntity)
-                        if (insertedId > 0) {
-                            newArticlesCount++
-                            // User-driven auto-tagging
-                            val autoTags = findAutoTags(item.title, item.content, allDbTags)
-                            val crossRefs = autoTags.map { NewsTagCrossRef(newsId = insertedId, tagId = it.id) }
-                            if (crossRefs.isNotEmpty()) {
-                                newsDao.insertNewsTagCrossRefs(crossRefs)
+                    )
+                    continue
+                }
+
+                try {
+                    val limitedItems = feed.items
+                        .sortedByDescending { it.pubDate }
+                        .take(MAX_ITEMS_PER_FEED_FETCH)
+
+                    for (item in limitedItems) {
+                        val existingByGuid = newsDao.getNewsByGuid(item.guid)
+                        val existingByLink = if (existingByGuid == null) newsDao.getNewsByLink(item.link) else null
+
+                        if (existingByGuid == null && existingByLink == null) {
+                            val newsEntity = NewsEntity(
+                                sourceId = source.id,
+                                guid = item.guid,
+                                title = item.title,
+                                summary = item.description,
+                                content = item.content,
+                                link = item.link,
+                                imageUrl = item.imageUrl,
+                                pubDate = item.pubDate
+                            )
+                            val insertedId = newsDao.insertNews(newsEntity)
+                            if (insertedId > 0) {
+                                newArticlesCount++
+                                // User-driven auto-tagging
+                                val autoTags = findAutoTags(item.title, item.content, allDbTags)
+                                val crossRefs = autoTags.map { NewsTagCrossRef(newsId = insertedId, tagId = it.id) }
+                                if (crossRefs.isNotEmpty()) {
+                                    newsDao.insertNewsTagCrossRefs(crossRefs)
+                                }
                             }
                         }
                     }
+                    newsDao.trimOldNewsForSource(source.id, MAX_STORED_NEWS_PER_SOURCE)
+                    successfulSourcesCount++
+                } catch (e: Exception) {
+                    failedList.add(
+                        FailedSourceInfo(
+                            sourceId = source.id,
+                            sourceTitle = source.title,
+                            sourceUrl = source.url,
+                            errorMessage = e.message ?: "Ошибка сохранения новостей"
+                        )
+                    )
                 }
             }
 
-            // Always update lastRefreshAt timestamp when refresh finishes
-            userPreferencesRepository.setLastRefreshAt(System.currentTimeMillis())
+            _failedSources.value = failedList
 
-            if (errors.isNotEmpty()) {
-                Result.failure(Exception("Ошибка сети при обновлении: ${errors.joinToString("; ")}"))
+            if (successfulSourcesCount > 0) {
+                userPreferencesRepository.setLastRefreshAt(System.currentTimeMillis())
+                Result.success(
+                    RefreshFeedsResult(
+                        newArticlesCount = newArticlesCount,
+                        totalSourcesCount = enabled.size,
+                        successfulSourcesCount = successfulSourcesCount,
+                        failedSources = failedList
+                    )
+                )
             } else {
-                Result.success(newArticlesCount)
+                val errorDetails = failedList.joinToString("; ") { "${it.sourceTitle}: ${it.errorMessage}" }
+                Result.failure(Exception("Ошибка сети при обновлении: $errorDetails"))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -286,7 +373,11 @@ class NewsRepository(
             if (id > 0) {
                 testFetch.getOrNull()?.let { feed ->
                     val allDbTags = tagDao.getAllTagsSync()
-                    for (item in feed.items) {
+                    val limitedItems = feed.items
+                        .sortedByDescending { it.pubDate }
+                        .take(MAX_ITEMS_PER_FEED_FETCH)
+
+                    for (item in limitedItems) {
                         val entity = NewsEntity(
                             sourceId = id,
                             guid = item.guid,
@@ -306,6 +397,7 @@ class NewsRepository(
                             }
                         }
                     }
+                    newsDao.trimOldNewsForSource(id, MAX_STORED_NEWS_PER_SOURCE)
                 }
                 Result.success(id)
             } else {
@@ -382,6 +474,67 @@ class NewsRepository(
 
     suspend fun translateText(text: String): Result<String> {
         return translationService.translateToRussian(text)
+    }
+
+    suspend fun savePreviewTranslation(
+        newsId: Long,
+        titleRu: String?,
+        summaryRu: String?
+    ) = withContext(Dispatchers.IO) {
+        newsDao.updateNewsPreviewTranslation(newsId, titleRu, summaryRu)
+    }
+
+    suspend fun translateUntranslatedPreviews(batchLimit: Int = 20): Int = withContext(Dispatchers.IO) {
+        translationMutex.withLock {
+            val candidates = newsDao.getUntranslatedNews(batchLimit)
+            var translatedCount = 0
+
+            for (item in candidates) {
+                try {
+                    var updatedTitleRu = item.titleRu
+                    var updatedSummaryRu = item.summaryRu
+
+                    if (updatedTitleRu == null) {
+                        val cleanTitle = RssParser.cleanHtml(item.title)
+                        if (cleanTitle.isBlank()) {
+                            updatedTitleRu = ""
+                        } else {
+                            val titleRes = translationService.translateToRussian(cleanTitle)
+                            if (titleRes.isSuccess) {
+                                updatedTitleRu = RssParser.cleanHtml(titleRes.getOrThrow())
+                            }
+                        }
+                    }
+
+                    if (updatedSummaryRu == null) {
+                        val cleanSummary = RssParser.cleanHtml(item.summary)
+                        if (cleanSummary.isBlank()) {
+                            updatedSummaryRu = ""
+                        } else {
+                            val summaryRes = translationService.translateToRussian(cleanSummary)
+                            if (summaryRes.isSuccess) {
+                                updatedSummaryRu = RssParser.cleanHtml(summaryRes.getOrThrow())
+                            }
+                        }
+                    }
+
+                    if (updatedTitleRu != item.titleRu || updatedSummaryRu != item.summaryRu) {
+                        newsDao.updateNewsPreviewTranslation(
+                            newsId = item.id,
+                            titleRu = updatedTitleRu,
+                            summaryRu = updatedSummaryRu
+                        )
+                        translatedCount++
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // Translation failures must never interrupt feed loading or app stability
+                }
+            }
+
+            translatedCount
+        }
     }
 
     // --- Configuration Export & Import (Task 1) ---

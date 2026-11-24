@@ -22,16 +22,17 @@ class FeedFetcher(
                 .header("Accept", "application/rss+xml, application/atom+xml, application/xml, text/xml, */*")
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(IOException("Ошибка сервера: HTTP ${response.code}"))
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IOException("Ошибка сервера: HTTP ${response.code}"))
+                }
+
+                val bodyString = response.body?.string()
+                    ?: return@withContext Result.failure(IOException("Ответ сервера пуст"))
+
+                val feed = RssParser.parse(bodyString)
+                Result.success(feed)
             }
-
-            val bodyString = response.body?.string()
-                ?: return@withContext Result.failure(IOException("Ответ сервера пуст"))
-
-            val feed = RssParser.parse(bodyString)
-            Result.success(feed)
         } catch (e: Exception) {
             Result.failure(e)
         }

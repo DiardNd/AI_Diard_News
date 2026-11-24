@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material3.Card
@@ -23,6 +24,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -34,6 +36,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.example.domain.model.NewsArticle
 import java.text.SimpleDateFormat
@@ -47,6 +50,25 @@ fun NewsCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val imageRequest = remember(article.imageUrl, context) {
+        ImageRequest.Builder(context)
+            .data(article.imageUrl)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCacheKey(article.imageUrl)
+            .memoryCacheKey(article.imageUrl)
+            .crossfade(true)
+            .build()
+    }
+
+    val displayTitle = remember(article.id, article.title, article.titleRu) {
+        article.titleRu?.takeIf { it.isNotBlank() } ?: article.title
+    }
+    val displaySummary = remember(article.id, article.summary, article.summaryRu) {
+        article.summaryRu?.takeIf { it.isNotBlank() } ?: article.summary
+    }
+
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -112,10 +134,7 @@ fun NewsCard(
                         .background(MaterialTheme.colorScheme.surface)
                 ) {
                     AsyncImage(
-                        model = ImageRequest.Builder(LocalContext.current)
-                            .data(article.imageUrl)
-                            .crossfade(true)
-                            .build(),
+                        model = imageRequest,
                         contentDescription = "Превью новости",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxWidth()
@@ -124,28 +143,31 @@ fun NewsCard(
                 Spacer(modifier = Modifier.height(10.dp))
             }
 
-            // Title
-            Text(
-                text = article.title,
-                style = MaterialTheme.typography.titleMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    lineHeight = 20.sp
-                ),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
-            )
+            // Selectable Title & Summary
+            SelectionContainer {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = displayTitle,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            lineHeight = 20.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
 
-            // Summary
-            if (article.summary.isNotBlank()) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = article.summary,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
-                )
+                    if (displaySummary.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = displaySummary,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
 
             // Tags

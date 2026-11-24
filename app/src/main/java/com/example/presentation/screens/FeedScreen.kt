@@ -22,9 +22,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.FilterListOff
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Refresh
@@ -32,8 +32,6 @@ import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.WifiOff
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -59,6 +57,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.domain.model.NewsArticle
@@ -73,11 +72,11 @@ fun FeedScreen(
     uiState: NewsFeedUiState,
     onRefresh: () -> Unit,
     onArticleClick: (NewsArticle) -> Unit,
-    onOpenFilters: () -> Unit,
+    onOpenTags: () -> Unit,
     onOpenHelp: () -> Unit,
     onNavigateToSources: () -> Unit,
-    onToggleTag: (Long) -> Unit,
-    onClearTagFilters: () -> Unit,
+    onToggleSourceFilter: (Long) -> Unit,
+    onClearSourceFilters: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onDismissNetworkError: () -> Unit,
     modifier: Modifier = Modifier
@@ -97,9 +96,10 @@ fun FeedScreen(
         formatRelativeRefreshTime(uiState.lastRefreshAt)
     }
 
-    val anySourceEnabled = remember(uiState.sources) {
-        uiState.sources.any { it.isEnabled }
+    val enabledSources = remember(uiState.sources) {
+        uiState.sources.filter { it.isEnabled }
     }
+    val anySourceEnabled = enabledSources.isNotEmpty()
 
     Column(
         modifier = modifier
@@ -159,26 +159,16 @@ fun FeedScreen(
                     )
                 }
 
-                // Filter button with active count badge
+                // Tags & auto-tag rules button
                 IconButton(
-                    onClick = onOpenFilters,
-                    modifier = Modifier.testTag("feed_filters_button")
+                    onClick = onOpenTags,
+                    modifier = Modifier.testTag("feed_tags_button")
                 ) {
-                    BadgedBox(
-                        badge = {
-                            if (uiState.selectedTagIds.isNotEmpty()) {
-                                Badge {
-                                    Text("${uiState.selectedTagIds.size}")
-                                }
-                            }
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.FilterList,
-                            contentDescription = "Фильтры тегов",
-                            tint = if (uiState.selectedTagIds.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Label,
+                        contentDescription = "Теги и правила",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
 
                 // Refresh button
@@ -290,7 +280,7 @@ fun FeedScreen(
                 .testTag("feed_search_input")
         )
 
-        // Quick Tag Filter Horizontal Strip
+        // Source Filter Horizontal Strip (Multi-select)
         val scrollState = rememberScrollState()
         Row(
             modifier = Modifier
@@ -301,33 +291,39 @@ fun FeedScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             FilterChip(
-                selected = uiState.selectedTagIds.isEmpty(),
-                onClick = onClearTagFilters,
+                selected = uiState.selectedSourceIds.isEmpty(),
+                onClick = onClearSourceFilters,
                 label = { Text("Все") },
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                     selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
                 ),
-                modifier = Modifier.testTag("tag_filter_all")
+                modifier = Modifier.testTag("source_filter_all")
             )
 
-            uiState.tags.forEach { tag ->
-                val isSelected = uiState.selectedTagIds.contains(tag.id)
+            enabledSources.forEach { source ->
+                val isSelected = uiState.selectedSourceIds.contains(source.id)
                 FilterChip(
                     selected = isSelected,
-                    onClick = { onToggleTag(tag.id) },
-                    label = { Text(tag.name) },
+                    onClick = { onToggleSourceFilter(source.id) },
+                    label = {
+                        Text(
+                            text = source.title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                         selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
                     ),
-                    modifier = Modifier.testTag("tag_filter_${tag.id}")
+                    modifier = Modifier.testTag("source_filter_${source.id}")
                 )
             }
         }
 
         // Active filters banner
-        AnimatedVisibility(visible = uiState.selectedTagIds.isNotEmpty() || uiState.searchQuery.isNotEmpty()) {
+        AnimatedVisibility(visible = uiState.selectedSourceIds.isNotEmpty() || uiState.searchQuery.isNotEmpty()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -351,7 +347,7 @@ fun FeedScreen(
                         .testTag("reset_filters_label")
                         .clip(RoundedCornerShape(4.dp))
                         .clickable {
-                            onClearTagFilters()
+                            onClearSourceFilters()
                             onSearchQueryChange("")
                         }
                         .padding(4.dp)
@@ -386,10 +382,10 @@ fun FeedScreen(
                     EmptyStateView(
                         icon = Icons.Default.FilterListOff,
                         title = "Нет новостей по выбранным фильтрам",
-                        description = "По выбранным тегам или поисковому запросу новости не найдены. Попробуйте сбросить фильтры или обновить ленту.",
+                        description = "По выбранным источникам или поисковому запросу новости не найдены. Попробуйте сбросить фильтры или обновить ленту.",
                         actionText = "Сбросить фильтры",
                         onActionClick = {
-                            onClearTagFilters()
+                            onClearSourceFilters()
                             onSearchQueryChange("")
                         },
                         secondaryActionText = "Обновить ленту",

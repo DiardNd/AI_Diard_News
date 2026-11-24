@@ -1,5 +1,6 @@
 package com.example.data.remote
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -8,15 +9,17 @@ import org.json.JSONArray
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
-class TranslationService(
+open class TranslationService(
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 ) {
-    suspend fun translateToRussian(text: String): Result<String> = withContext(Dispatchers.IO) {
+    open suspend fun translateToRussian(text: String): Result<String> = withContext(Dispatchers.IO) {
         val cleanInput = RssParser.cleanHtml(text)
-        if (cleanInput.isBlank()) return@withContext Result.success(cleanInput)
+        if (cleanInput.isBlank() || isAlreadyRussian(cleanInput)) {
+            return@withContext Result.success(cleanInput)
+        }
 
         try {
             // Split into manageable chunks by paragraphs or punctuation if too large
@@ -32,22 +35,38 @@ class TranslationService(
                     .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36 DiardNews/1.0")
                     .build()
 
-                val response = client.newCall(request).execute()
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(Exception("Ошибка сервера перевода: HTTP ${response.code}"))
+                val translatedChunk = client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        return@withContext Result.failure(Exception("Ошибка сервера перевода: HTTP ${response.code}"))
+                    }
+                    val body = response.body?.string() ?: ""
+                    val translated = parseGoogleTranslateResponse(body)
+                    RssParser.cleanHtml(if (translated.isNotBlank()) translated else chunk)
                 }
-
-                val body = response.body?.string() ?: ""
-                val translated = parseGoogleTranslateResponse(body)
-                val cleanTranslated = RssParser.cleanHtml(if (translated.isNotBlank()) translated else chunk)
-                translatedChunks.add(cleanTranslated)
+                translatedChunks.add(translatedChunk)
             }
 
             val finalCombined = RssParser.cleanHtml(translatedChunks.joinToString("\n\n"))
             Result.success(finalCombined)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    internal fun isAlreadyRussian(text: String): Boolean {
+        var cyrillicCount = 0
+        var totalLetters = 0
+        for (ch in text) {
+            if (ch.isLetter()) {
+                totalLetters++
+                if (ch in '\u0400'..'\u04FF') {
+                    cyrillicCount++
+                }
+            }
+        }
+        return totalLetters > 0 && cyrillicCount >= 3 && cyrillicCount * 4 >= totalLetters
     }
 
     private fun parseGoogleTranslateResponse(jsonString: String): String {
