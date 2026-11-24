@@ -187,14 +187,14 @@ fun HelpScreen(
                 }
             }
 
-            // "Что нового в 0.0.2" Section
+            // "Что нового в 0.0.3" Section
             item {
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
                     ),
                     shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth().testTag("whats_new_002_card")
+                    modifier = Modifier.fillMaxWidth().testTag("whats_new_003_card")
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -215,12 +215,12 @@ fun HelpScreen(
                             Spacer(modifier = Modifier.width(10.dp))
                             Column {
                                 Text(
-                                    text = "Что нового в версии 0.0.2",
+                                    text = "Что нового в версии 0.0.3",
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "Обновление функционала и стабильности",
+                                    text = "Фильтры по источникам, автоперевод превью, кэш и стабильность",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -230,10 +230,12 @@ fun HelpScreen(
                         Spacer(modifier = Modifier.height(12.dp))
 
                         val changelogItems = listOf(
-                            "💾 Экспорт и импорт (JSON via SAF): Быстрый перенос источников, тегов, авто-правил и связок статей через системный диалог файлов.",
-                            "⏱️ Индикатор последнего обновления: В шапке ленты теперь наглядно отображается время последней синхронизации с сохранением в DataStore.",
-                            "📭 Улучшенные пустые экраны (Empty States): Подсказки и удобные кнопки быстрого перехода при отсутствии источников, фильтров или тегов.",
-                            "🛡️ Сетевой статус: Ошибки сети не сбрасывают ленту — сохранённые новости всегда доступны оффлайн с ненавязчивым предупреждением."
+                            "🌐 Устойчивое обновление RSS: сбой отдельных источников больше не блокирует остальные — успешные ленты сохраняются, а проблемные источники фиксируются отдельно.",
+                            "🖼️ Кэширование изображений: единый ImageLoader с дисковым и оперативным кэшем предотвращает повторную загрузку картинок.",
+                            "📋 Выделение и копирование текста: заголовки и текст новостей можно выделять и копировать прямо в карточках и внутри статьи, а также копировать всю статью одной кнопкой.",
+                            "📦 Лимиты хранения: обрабатывается до 30 самых свежих записей за обновление и хранится до 50 новостей на каждый источник без переполнения базы.",
+                            "🇷🇺 Автоперевод превью: заголовки и краткие описания новых новостей автоматически переводятся на русский и кэшируются в Room (полный текст переводится вручную).",
+                            "🏷️ Фильтры по источникам и вкладка «Теги»: лента фильтруется по RSS-источникам с мультивыбором, а теги перенесены во вкладку «Теги» как визуальные метки и правила авто-разметки."
                         )
 
                         changelogItems.forEach { itemText ->
