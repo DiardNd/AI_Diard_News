@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.DynamicFeed
@@ -67,6 +68,7 @@ fun DiardNewsApp(viewModel: NewsViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Feed) }
+    val feedListState = rememberLazyListState()
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
@@ -144,6 +146,7 @@ fun DiardNewsApp(viewModel: NewsViewModel) {
                         onClearSourceFilters = { viewModel.clearSourceFilters() },
                         onSearchQueryChange = { q -> viewModel.setSearchQuery(q) },
                         onDismissNetworkError = { viewModel.clearNetworkError() },
+                        listState = feedListState,
                         modifier = Modifier.padding(innerPadding)
                     )
                 }
@@ -156,6 +159,8 @@ fun DiardNewsApp(viewModel: NewsViewModel) {
                             viewModel.addSource(title, url, onComplete)
                         },
                         onDeleteSource = { id -> viewModel.deleteSource(id) },
+                        onMoveSourceUp = { id -> viewModel.moveSourceUp(id) },
+                        onMoveSourceDown = { id -> viewModel.moveSourceDown(id) },
                         onRestorePresets = { viewModel.resetDefaultSources() },
                         onExportToUri = { uri ->
                             coroutineScope.launch {

@@ -21,7 +21,7 @@ import com.example.data.local.entity.TagEntity
         TagEntity::class,
         NewsTagCrossRef::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -40,6 +40,23 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sources ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    """
+                    UPDATE sources
+                    SET sortOrder = (
+                        SELECT COUNT(*)
+                        FROM sources AS s2
+                        WHERE s2.title < sources.title
+                           OR (s2.title = sources.title AND s2.id < sources.id)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -47,7 +64,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "emu_news.db"
                 )
-                    .addMigrations(MIGRATION_2_3)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

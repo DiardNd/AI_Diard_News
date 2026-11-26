@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,6 +53,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +68,7 @@ import com.example.presentation.components.EmptyStateView
 import com.example.presentation.components.NewsCard
 import com.example.presentation.viewmodel.NewsFeedUiState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -79,9 +83,11 @@ fun FeedScreen(
     onClearSourceFilters: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onDismissNetworkError: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState()
 ) {
     val pullRefreshState = rememberPullToRefreshState()
+    val coroutineScope = rememberCoroutineScope()
 
     // Periodic ticker to keep the relative last refresh time updated on screen
     var currentClock by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -290,9 +296,16 @@ fun FeedScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val isAllSelected = uiState.selectedSourceIds.isEmpty()
             FilterChip(
-                selected = uiState.selectedSourceIds.isEmpty(),
-                onClick = onClearSourceFilters,
+                selected = isAllSelected,
+                onClick = {
+                    if (isAllSelected) {
+                        coroutineScope.launch { listState.animateScrollToItem(0) }
+                    } else {
+                        onClearSourceFilters()
+                    }
+                },
                 label = { Text("Все") },
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -305,7 +318,14 @@ fun FeedScreen(
                 val isSelected = uiState.selectedSourceIds.contains(source.id)
                 FilterChip(
                     selected = isSelected,
-                    onClick = { onToggleSourceFilter(source.id) },
+                    onClick = {
+                        val isScrolledDown = listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
+                        if (isSelected && isScrolledDown) {
+                            coroutineScope.launch { listState.animateScrollToItem(0) }
+                        } else {
+                            onToggleSourceFilter(source.id)
+                        }
+                    },
                     label = {
                         Text(
                             text = source.title,
@@ -415,6 +435,7 @@ fun FeedScreen(
                 // News list content
                 else -> {
                     LazyColumn(
+                        state = listState,
                         modifier = Modifier
                             .fillMaxSize()
                             .testTag("news_feed_list"),

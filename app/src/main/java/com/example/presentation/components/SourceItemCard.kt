@@ -12,10 +12,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -40,7 +43,11 @@ fun SourceItemCard(
     source: NewsSource,
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    canMoveUp: Boolean = true,
+    canMoveDown: Boolean = true,
+    onMoveUp: () -> Unit = {},
+    onMoveDown: () -> Unit = {}
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
@@ -57,59 +64,104 @@ fun SourceItemCard(
             }
         )
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 6.dp)
         ) {
-            Icon(
-                imageVector = Icons.Default.RssFeed,
-                contentDescription = null,
-                tint = if (source.isEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                modifier = Modifier.size(24.dp)
-            )
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = source.title,
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                    color = if (source.isEnabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = source.url,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            IconButton(
-                onClick = { showDeleteConfirm = true },
-                modifier = Modifier
-                    .size(40.dp)
-                    .testTag("delete_source_button_${source.id}")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    imageVector = Icons.Default.DeleteOutline,
-                    contentDescription = "Удалить источник",
-                    tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+                    imageVector = Icons.Default.RssFeed,
+                    contentDescription = null,
+                    tint = if (source.isEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.size(24.dp)
+                )
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = source.title,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = if (source.isEnabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = source.url,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Switch(
+                    checked = source.isEnabled,
+                    onCheckedChange = onToggle,
+                    modifier = Modifier.testTag("source_switch_${source.id}")
                 )
             }
 
-            Switch(
-                checked = source.isEnabled,
-                onCheckedChange = onToggle,
-                modifier = Modifier.testTag("source_switch_${source.id}")
-            )
+            Spacer(modifier = Modifier.height(8.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onMoveUp,
+                        enabled = canMoveUp,
+                        modifier = Modifier.testTag("move_source_up_${source.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowUp,
+                            contentDescription = "Переместить источник выше",
+                            tint = if (canMoveUp) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f)
+                            }
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onMoveDown,
+                        enabled = canMoveDown,
+                        modifier = Modifier.testTag("move_source_down_${source.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Переместить источник ниже",
+                            tint = if (canMoveDown) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f)
+                            }
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = { showDeleteConfirm = true },
+                    modifier = Modifier.testTag("delete_source_button_${source.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.DeleteOutline,
+                        contentDescription = "Удалить источник",
+                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+                    )
+                }
+            }
         }
     }
 

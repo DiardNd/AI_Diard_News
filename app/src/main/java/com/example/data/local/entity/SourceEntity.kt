@@ -14,5 +14,6 @@ data class SourceEntity(
     val title: String,
     val url: String,
     val isEnabled: Boolean = true,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val sortOrder: Int = 0
 )

@@ -12,7 +12,8 @@ data class NewsSource(
     val title: String,
     val url: String,
     val isEnabled: Boolean,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val sortOrder: Int = 0
 )
 
 data class NewsArticle(

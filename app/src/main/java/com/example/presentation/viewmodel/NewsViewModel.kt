@@ -203,6 +203,18 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun moveSourceUp(sourceId: Long) {
+        viewModelScope.launch {
+            repository.moveSource(sourceId, moveUp = true)
+        }
+    }
+
+    fun moveSourceDown(sourceId: Long) {
+        viewModelScope.launch {
+            repository.moveSource(sourceId, moveUp = false)
+        }
+    }
+
     fun addSource(title: String, url: String, onComplete: (Boolean, String?) -> Unit) {
         viewModelScope.launch {
             _isRefreshing.value = true

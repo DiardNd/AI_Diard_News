@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Download
@@ -52,6 +52,8 @@ fun SourcesScreen(
     onToggleSource: (Long, Boolean) -> Unit,
     onAddSource: (title: String, url: String, onComplete: (Boolean, String?) -> Unit) -> Unit,
     onDeleteSource: (Long) -> Unit,
+    onMoveSourceUp: (Long) -> Unit,
+    onMoveSourceDown: (Long) -> Unit,
     onRestorePresets: () -> Unit,
     onExportToUri: (Uri) -> Unit,
     onImportFromUri: (Uri) -> Unit,
@@ -122,7 +124,7 @@ fun SourcesScreen(
 
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Отключите переключатель, чтобы скрыть новости источника из ленты. Новости загружаются автоматически при обновлении.",
+                        text = "Отключите переключатель, чтобы скрыть новости источника. Стрелки ↑ и ↓ меняют порядок источников в списке и в фильтре ленты.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -181,14 +183,19 @@ fun SourcesScreen(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 88.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(
+                    itemsIndexed(
                         items = sources,
-                        key = { it.id }
-                    ) { source ->
+                        key = { _, item -> item.id }
+                    ) { index, source ->
                         SourceItemCard(
                             source = source,
                             onToggle = { isEnabled -> onToggleSource(source.id, isEnabled) },
-                            onDelete = { onDeleteSource(source.id) }
+                            onDelete = { onDeleteSource(source.id) },
+                            canMoveUp = index > 0,
+                            canMoveDown = index < sources.lastIndex,
+                            onMoveUp = { onMoveSourceUp(source.id) },
+                            onMoveDown = { onMoveSourceDown(source.id) },
+                            modifier = Modifier.animateItem()
                         )
                     }
                 }

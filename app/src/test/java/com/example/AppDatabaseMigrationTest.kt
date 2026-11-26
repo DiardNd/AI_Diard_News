@@ -120,9 +120,9 @@ class AppDatabaseMigrationTest {
         }
         v2Helper.close()
 
-        // 2. Open with Room v3 and MIGRATION_2_3 (WITHOUT fallbackToDestructiveMigration so migration failure would throw)
+        // 2. Open with Room v4 using MIGRATION_2_3 + MIGRATION_3_4 (WITHOUT fallbackToDestructiveMigration)
         val migratedDb = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_2_3)
+            .addMigrations(AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4)
             .allowMainThreadQueries()
             .build()
 
@@ -173,6 +173,105 @@ class AppDatabaseMigrationTest {
             assertEquals(2, migratedDb.newsDao().count())
         } finally {
             migratedDb.close()
+        }
+    }
+
+    @Test
+    fun migrate3To4PreservesSourcesAndInitializesDeterministicSortOrder() = runTest {
+        val v3DbName = "migration_v3_v4_test.db"
+        context.deleteDatabase(v3DbName)
+
+        val helperConfig = SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(v3DbName)
+            .callback(object : SupportSQLiteOpenHelper.Callback(3) {
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    db.execSQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS `sources` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `title` TEXT NOT NULL,
+                            `url` TEXT NOT NULL,
+                            `isEnabled` INTEGER NOT NULL,
+                            `createdAt` INTEGER NOT NULL
+                        )
+                        """.trimIndent()
+                    )
+                    db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_sources_url` ON `sources` (`url`)")
+
+                    db.execSQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS `news` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `sourceId` INTEGER NOT NULL,
+                            `guid` TEXT NOT NULL,
+                            `title` TEXT NOT NULL,
+                            `summary` TEXT NOT NULL,
+                            `content` TEXT NOT NULL,
+                            `link` TEXT NOT NULL,
+                            `imageUrl` TEXT,
+                            `pubDate` INTEGER NOT NULL,
+                            `createdAt` INTEGER NOT NULL,
+                            `titleRu` TEXT,
+                            `summaryRu` TEXT,
+                            FOREIGN KEY(`sourceId`) REFERENCES `sources`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                        )
+                        """.trimIndent()
+                    )
+                    db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_news_guid` ON `news` (`guid`)")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS `index_news_sourceId` ON `news` (`sourceId`)")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS `index_news_pubDate` ON `news` (`pubDate`)")
+
+                    db.execSQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS `tags` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `name` TEXT NOT NULL,
+                            `colorHex` TEXT NOT NULL,
+                            `keywords` TEXT NOT NULL
+                        )
+                        """.trimIndent()
+                    )
+                    db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_tags_name` ON `tags` (`name`)")
+
+                    db.execSQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS `news_tags` (
+                            `newsId` INTEGER NOT NULL,
+                            `tagId` INTEGER NOT NULL,
+                            PRIMARY KEY(`newsId`, `tagId`),
+                            FOREIGN KEY(`newsId`) REFERENCES `news`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                            FOREIGN KEY(`tagId`) REFERENCES `tags`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                        )
+                        """.trimIndent()
+                    )
+                    db.execSQL("CREATE INDEX IF NOT EXISTS `index_news_tags_newsId` ON `news_tags` (`newsId`)")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS `index_news_tags_tagId` ON `news_tags` (`tagId`)")
+                }
+
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+            })
+            .build()
+
+        val v3Helper = FrameworkSQLiteOpenHelperFactory().create(helperConfig)
+        v3Helper.writableDatabase.use { db ->
+            db.execSQL("INSERT INTO sources (id, title, url, isEnabled, createdAt) VALUES (1, 'Zeta Feed', 'https://zeta.test/feed', 1, 100)")
+            db.execSQL("INSERT INTO sources (id, title, url, isEnabled, createdAt) VALUES (2, 'Alpha Feed', 'https://alpha.test/feed', 1, 200)")
+            db.execSQL("INSERT INTO sources (id, title, url, isEnabled, createdAt) VALUES (3, 'Middle Feed', 'https://middle.test/feed', 0, 300)")
+        }
+        v3Helper.close()
+
+        val migratedDb = Room.databaseBuilder(context, AppDatabase::class.java, v3DbName)
+            .addMigrations(AppDatabase.MIGRATION_3_4)
+            .allowMainThreadQueries()
+            .build()
+
+        try {
+            val ordered = migratedDb.sourceDao().getAllSourcesSync()
+            assertEquals(listOf("Alpha Feed", "Middle Feed", "Zeta Feed"), ordered.map { it.title })
+            assertEquals(listOf(0, 1, 2), ordered.map { it.sortOrder })
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(v3DbName)
         }
     }
 }

@@ -133,10 +133,11 @@ class NewsRepository(
 
     suspend fun resetDefaultSources() = withContext(Dispatchers.IO) {
         val defaultSources = getDefaultSourcesList()
+        var nextOrder = sourceDao.getMaxSortOrder() + 1
         for (source in defaultSources) {
             val existing = sourceDao.getSourceByUrl(source.url)
             if (existing == null) {
-                sourceDao.insertSource(source)
+                sourceDao.insertSource(source.copy(sortOrder = nextOrder++))
             } else {
                 sourceDao.updateSource(existing.copy(isEnabled = true))
             }
@@ -148,27 +149,32 @@ class NewsRepository(
             SourceEntity(
                 title = "Libretro & RetroArch Blog",
                 url = "https://www.libretro.com/index.php/feed/",
-                isEnabled = true
+                isEnabled = true,
+                sortOrder = 0
             ),
             SourceEntity(
                 title = "Reddit r/emulation",
                 url = "https://www.reddit.com/r/emulation/.rss",
-                isEnabled = true
+                isEnabled = true,
+                sortOrder = 1
             ),
             SourceEntity(
                 title = "Dolphin Emulator",
                 url = "https://dolphin-emu.org/blog/feeds/",
-                isEnabled = true
+                isEnabled = true,
+                sortOrder = 2
             ),
             SourceEntity(
                 title = "PPSSPP PSP Emulator",
                 url = "https://www.ppsspp.org/feed.xml",
-                isEnabled = true
+                isEnabled = true,
+                sortOrder = 3
             ),
             SourceEntity(
                 title = "RPCS3 PS3 Emulator",
                 url = "https://rpcs3.net/blog/feed/",
-                isEnabled = true
+                isEnabled = true,
+                sortOrder = 4
             )
         )
     }
@@ -353,6 +359,17 @@ class NewsRepository(
         sourceDao.setSourceEnabled(sourceId, isEnabled)
     }
 
+    suspend fun moveSource(sourceId: Long, moveUp: Boolean) = withContext(Dispatchers.IO) {
+        val current = sourceDao.getAllSourcesSync().toMutableList()
+        val index = current.indexOfFirst { it.id == sourceId }
+        val targetIndex = if (moveUp) index - 1 else index + 1
+        if (index < 0 || targetIndex !in current.indices) return@withContext
+
+        val item = current.removeAt(index)
+        current.add(targetIndex, item)
+        sourceDao.updateSortOrders(current.map { it.id })
+    }
+
     suspend fun addSource(title: String, url: String): Result<Long> = withContext(Dispatchers.IO) {
         try {
             val existing = sourceDao.getSourceByUrl(url)
@@ -363,11 +380,13 @@ class NewsRepository(
             val testFetch = feedFetcher.fetchFeed(url)
             val feedTitle = testFetch.getOrNull()?.title
             val finalTitle = title.trim().ifEmpty { feedTitle ?: "RSS Источник" }
+            val nextSortOrder = sourceDao.getMaxSortOrder() + 1
 
             val newSource = SourceEntity(
                 title = finalTitle,
                 url = url.trim(),
-                isEnabled = true
+                isEnabled = true,
+                sortOrder = nextSortOrder
             )
             val id = sourceDao.insertSource(newSource)
             if (id > 0) {
@@ -582,11 +601,17 @@ class NewsRepository(
         var linkedArticleTagsCount = 0
 
         // Merge sources without duplicates
+        var nextSortOrder = sourceDao.getMaxSortOrder() + 1
         for (src in config.sources) {
             val existing = sourceDao.getSourceByUrl(src.url)
             if (existing == null) {
                 sourceDao.insertSource(
-                    SourceEntity(title = src.title, url = src.url, isEnabled = src.isEnabled)
+                    SourceEntity(
+                        title = src.title,
+                        url = src.url,
+                        isEnabled = src.isEnabled,
+                        sortOrder = nextSortOrder++
+                    )
                 )
                 importedSourcesCount++
             } else {
@@ -674,7 +699,8 @@ class NewsRepository(
         title = title,
         url = url,
         isEnabled = isEnabled,
-        createdAt = createdAt
+        createdAt = createdAt,
+        sortOrder = sortOrder
     )
 
     private fun TagEntity.toDomain() = TagItem(
