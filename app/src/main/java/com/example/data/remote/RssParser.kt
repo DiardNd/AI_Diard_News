@@ -41,12 +41,16 @@ object RssParser {
 
         var feedTitle: String? = null
         var feedDescription: String? = null
+        var rootTag: String? = null
         val items = mutableListOf<ParsedFeedItem>()
 
         var eventType = parser.eventType
         while (eventType != XmlPullParser.END_DOCUMENT) {
             if (eventType == XmlPullParser.START_TAG) {
                 val tagName = parser.name?.lowercase(Locale.ROOT)
+                if (rootTag == null && tagName != null) {
+                    rootTag = tagName
+                }
                 when (tagName) {
                     "item" -> {
                         val item = parseRssItem(parser)
@@ -74,7 +78,8 @@ object RssParser {
         return ParsedFeed(
             title = feedTitle?.let { cleanHtml(it) },
             description = feedDescription?.let { cleanHtml(it) },
-            items = items
+            items = items,
+            rootTag = rootTag
         )
     }
 
@@ -85,6 +90,8 @@ object RssParser {
         var content = ""
         var guid = ""
         var pubDate = System.currentTimeMillis()
+        var rawPubDate: String? = null
+        var parsedPubDate: Long? = null
         var imageUrl: String? = null
 
         parser.require(XmlPullParser.START_TAG, null, "item")
@@ -110,7 +117,14 @@ object RssParser {
                 name == "guid" -> guid = readText(parser).trim()
                 name == "pubdate" -> {
                     val dateStr = readText(parser).trim()
-                    pubDate = parseDate(dateStr)
+                    if (dateStr.isNotEmpty()) {
+                        rawPubDate = dateStr
+                    }
+                    val parsed = parseDateOrNull(dateStr)
+                    if (parsed != null) {
+                        pubDate = parsed
+                        parsedPubDate = parsed
+                    }
                 }
                 name == "enclosure" -> {
                     val url = parser.getAttributeValue(null, "url")
@@ -148,7 +162,9 @@ object RssParser {
             description = summary,
             content = fullContent.ifEmpty { summary },
             imageUrl = imageUrl,
-            pubDate = pubDate
+            pubDate = pubDate,
+            rawPubDate = rawPubDate,
+            parsedPubDate = parsedPubDate
         )
     }
 
@@ -159,6 +175,8 @@ object RssParser {
         var content = ""
         var id = ""
         var pubDate = System.currentTimeMillis()
+        var rawPubDate: String? = null
+        var parsedPubDate: Long? = null
         var imageUrl: String? = null
 
         parser.require(XmlPullParser.START_TAG, null, "entry")
@@ -195,7 +213,15 @@ object RssParser {
                 name == "id" -> id = readText(parser).trim()
                 name == "published" || name == "updated" -> {
                     val dateStr = readText(parser).trim()
-                    pubDate = parseDate(dateStr)
+                    if (dateStr.isNotEmpty() && rawPubDate == null) {
+                        rawPubDate = dateStr
+                    }
+                    val parsed = parseDateOrNull(dateStr)
+                    if (parsed != null && (parsedPubDate == null || name == "published")) {
+                        pubDate = parsed
+                        parsedPubDate = parsed
+                        rawPubDate = dateStr
+                    }
                 }
                 else -> skip(parser)
             }
@@ -217,7 +243,9 @@ object RssParser {
             description = cleanSummary,
             content = fullContent.ifEmpty { cleanSummary },
             imageUrl = imageUrl,
-            pubDate = pubDate
+            pubDate = pubDate,
+            rawPubDate = rawPubDate,
+            parsedPubDate = parsedPubDate
         )
     }
 
@@ -342,14 +370,19 @@ object RssParser {
                 lower.contains("i.redd.it")
     }
 
-    private fun parseDate(dateStr: String): Long {
+    fun parseDateOrNull(dateStr: String): Long? {
+        if (dateStr.isBlank()) return null
         for (format in DATE_FORMATS) {
             try {
-                val date = format.parse(dateStr)
+                val date = synchronized(format) { format.parse(dateStr) }
                 if (date != null) return date.time
             } catch (_: Exception) {
             }
         }
-        return System.currentTimeMillis()
+        return null
+    }
+
+    private fun parseDate(dateStr: String): Long {
+        return parseDateOrNull(dateStr) ?: System.currentTimeMillis()
     }
 }

@@ -26,6 +26,7 @@ import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,6 +35,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.example.domain.model.NewsSource
+import com.example.domain.model.UrlNormalizer
 
 data class FeedPreset(val name: String, val url: String)
 
@@ -42,12 +45,22 @@ data class FeedPreset(val name: String, val url: String)
 fun AddSourceDialog(
     onDismiss: () -> Unit,
     onAdd: (title: String, url: String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    existingSources: List<NewsSource> = emptyList(),
+    externalError: String? = null,
+    isSubmitting: Boolean = false
 ) {
     var title by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
-    var isError by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf("") }
+    var localError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(externalError) {
+        if (!externalError.isNullOrBlank()) {
+            localError = externalError
+        }
+    }
+
+    val displayedError = localError ?: externalError
 
     val presets = listOf(
         FeedPreset("Winlator Releases", "https://github.com/brunodev85/winlator/releases.atom"),
@@ -59,7 +72,7 @@ fun AddSourceDialog(
     )
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isSubmitting) onDismiss() },
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -84,6 +97,7 @@ fun AddSourceDialog(
                     placeholder = { Text("например: RetroArch Blog") },
                     leadingIcon = { Icon(Icons.Default.Title, contentDescription = null) },
                     singleLine = true,
+                    enabled = !isSubmitting,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("source_title_input")
@@ -95,16 +109,16 @@ fun AddSourceDialog(
                     value = url,
                     onValueChange = {
                         url = it
-                        isError = false
-                        errorMessage = ""
+                        localError = null
                     },
                     label = { Text("URL RSS/Atom ленты *") },
                     placeholder = { Text("https://example.com/feed.xml") },
                     leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
                     singleLine = true,
-                    isError = isError,
-                    supportingText = if (isError) {
-                        { Text(errorMessage) }
+                    enabled = !isSubmitting,
+                    isError = !displayedError.isNullOrBlank(),
+                    supportingText = if (!displayedError.isNullOrBlank()) {
+                        { Text(displayedError) }
                     } else null,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -128,9 +142,11 @@ fun AddSourceDialog(
                     presets.forEach { preset ->
                         SuggestionChip(
                             onClick = {
-                                title = preset.name
-                                url = preset.url
-                                isError = false
+                                if (!isSubmitting) {
+                                    title = preset.name
+                                    url = preset.url
+                                    localError = null
+                                }
                             },
                             label = { Text(preset.name, style = MaterialTheme.typography.labelSmall) }
                         )
@@ -140,22 +156,43 @@ fun AddSourceDialog(
         },
         confirmButton = {
             Button(
+                enabled = !isSubmitting,
                 onClick = {
                     val cleanUrl = url.trim()
-                    if (cleanUrl.isBlank() || (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://"))) {
-                        isError = true
-                        errorMessage = "Введите корректный URL (начиная с https://)"
+                    if (cleanUrl.isBlank() ||
+                        (!cleanUrl.startsWith("http://", ignoreCase = true) &&
+                            !cleanUrl.startsWith("https://", ignoreCase = true))
+                    ) {
+                        localError = "Введите корректный URL (начиная с http:// или https://)"
+                        return@Button
+                    }
+                    val normalizedCandidate = UrlNormalizer.normalizeForComparison(cleanUrl)
+                    val duplicate = existingSources.firstOrNull {
+                        UrlNormalizer.normalizeForComparison(it.url) == normalizedCandidate
+                    }
+                    if (duplicate != null) {
+                        localError = "Этот источник уже добавлен («${duplicate.title}»)"
                         return@Button
                     }
                     onAdd(title, cleanUrl)
                 },
                 modifier = Modifier.testTag("submit_add_source_button")
             ) {
+                if (isSubmitting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.size(6.dp))
+                }
                 Text("Добавить")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(
+                enabled = !isSubmitting,
+                onClick = onDismiss
+            ) {
                 Text("Отмена")
             }
         },

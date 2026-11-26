@@ -15,9 +15,16 @@ import com.example.data.local.entity.TagEntity
 import com.example.data.remote.FeedFetcher
 import com.example.data.remote.RssParser
 import com.example.data.remote.TranslationService
+import com.example.domain.model.DiagnosticStep
+import com.example.domain.model.DiagnosticStepStatus
 import com.example.domain.model.NewsArticle
 import com.example.domain.model.NewsSource
+import com.example.domain.model.SourceDiagnosticReport
+import com.example.domain.model.SourceHealthStatus
+import com.example.domain.model.SourceStatusInfo
 import com.example.domain.model.TagItem
+import com.example.domain.model.UrlNormalizer
+import com.example.presentation.viewmodel.filterNewsArticles
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -28,6 +35,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 data class FailedSourceInfo(
@@ -53,15 +63,23 @@ class NewsRepository(
     companion object {
         const val MAX_ITEMS_PER_FEED_FETCH = 30
         const val MAX_STORED_NEWS_PER_SOURCE = 50
+        // 180 days (~6 months): monthly/quarterly software & emulator devblogs stay healthy;
+        // half a year without posts indicates an inactive or abandoned feed.
+        const val STALE_FEED_THRESHOLD_DAYS = 180L
+        private const val STALE_FEED_THRESHOLD_MS = STALE_FEED_THRESHOLD_DAYS * 24L * 60L * 60L * 1000L
     }
 
     private val sourceDao = database.sourceDao()
     private val tagDao = database.tagDao()
     private val newsDao = database.newsDao()
     private val translationMutex = Mutex()
+    private val sourceMutationMutex = Mutex()
 
     private val _failedSources = MutableStateFlow<List<FailedSourceInfo>>(emptyList())
     val failedSources: StateFlow<List<FailedSourceInfo>> = _failedSources.asStateFlow()
+
+    private val _sourceStatuses = MutableStateFlow<Map<Long, SourceStatusInfo>>(emptyMap())
+    val sourceStatuses: StateFlow<Map<Long, SourceStatusInfo>> = _sourceStatuses.asStateFlow()
 
     val lastRefreshAt: Flow<Long> = userPreferencesRepository.lastRefreshAt
 
@@ -259,6 +277,8 @@ class NewsRepository(
             var newArticlesCount = 0
             var successfulSourcesCount = 0
             val failedList = mutableListOf<FailedSourceInfo>()
+            val statusMap = _sourceStatuses.value.toMutableMap()
+            val now = System.currentTimeMillis()
 
             for (source in enabled) {
                 val fetchResult = feedFetcher.fetchFeed(source.url)
@@ -271,6 +291,11 @@ class NewsRepository(
                             sourceUrl = source.url,
                             errorMessage = msg
                         )
+                    )
+                    statusMap[source.id] = SourceStatusInfo(
+                        sourceId = source.id,
+                        status = SourceHealthStatus.NETWORK_OR_HTTP_ERROR,
+                        message = msg
                     )
                     continue
                 }
@@ -285,6 +310,23 @@ class NewsRepository(
                             errorMessage = "Пустой ответ ленты"
                         )
                     )
+                    statusMap[source.id] = SourceStatusInfo(
+                        sourceId = source.id,
+                        status = SourceHealthStatus.NETWORK_OR_HTTP_ERROR,
+                        message = "Пустой ответ ленты"
+                    )
+                    continue
+                }
+
+                if (feed.items.isEmpty()) {
+                    successfulSourcesCount++
+                    statusMap[source.id] = SourceStatusInfo(
+                        sourceId = source.id,
+                        status = SourceHealthStatus.EMPTY_FEED,
+                        message = "Источник доступен, но RSS содержит 0 записей",
+                        fetchedCount = 0,
+                        newCount = 0
+                    )
                     continue
                 }
 
@@ -292,6 +334,10 @@ class NewsRepository(
                     val limitedItems = feed.items
                         .sortedByDescending { it.pubDate }
                         .take(MAX_ITEMS_PER_FEED_FETCH)
+
+                    var sourceNewCount = 0
+                    var sourceAlreadyInDbCount = 0
+                    var sourceSaveFailedCount = 0
 
                     for (item in limitedItems) {
                         val existingByGuid = newsDao.getNewsByGuid(item.guid)
@@ -311,30 +357,82 @@ class NewsRepository(
                             val insertedId = newsDao.insertNews(newsEntity)
                             if (insertedId > 0) {
                                 newArticlesCount++
+                                sourceNewCount++
                                 // User-driven auto-tagging
                                 val autoTags = findAutoTags(item.title, item.content, allDbTags)
                                 val crossRefs = autoTags.map { NewsTagCrossRef(newsId = insertedId, tagId = it.id) }
                                 if (crossRefs.isNotEmpty()) {
                                     newsDao.insertNewsTagCrossRefs(crossRefs)
                                 }
+                            } else {
+                                sourceSaveFailedCount++
                             }
+                        } else {
+                            sourceAlreadyInDbCount++
                         }
                     }
                     newsDao.trimOldNewsForSource(source.id, MAX_STORED_NEWS_PER_SOURCE)
                     successfulSourcesCount++
-                } catch (e: Exception) {
-                    failedList.add(
-                        FailedSourceInfo(
+
+                    val latestActualPubDate = feed.items.mapNotNull { it.parsedPubDate }.maxOrNull()
+                    val isStale = latestActualPubDate != null && (now - latestActualPubDate) > STALE_FEED_THRESHOLD_MS
+
+                    statusMap[source.id] = when {
+                        sourceSaveFailedCount > 0 && sourceNewCount == 0 -> SourceStatusInfo(
                             sourceId = source.id,
-                            sourceTitle = source.title,
-                            sourceUrl = source.url,
-                            errorMessage = e.message ?: "Ошибка сохранения новостей"
+                            status = SourceHealthStatus.DB_SAVE_ERROR,
+                            message = "Записи получены (${limitedItems.size}), но не удалось сохранить их в базу",
+                            latestPubDate = latestActualPubDate,
+                            fetchedCount = feed.items.size,
+                            newCount = 0
                         )
+                        isStale -> {
+                            val dateStr = formatShortDate(latestActualPubDate!!)
+                            val suffix = if (sourceNewCount == 0 && sourceAlreadyInDbCount > 0) {
+                                " (все записи уже в базе)"
+                            } else {
+                                ""
+                            }
+                            SourceStatusInfo(
+                                sourceId = source.id,
+                                status = SourceHealthStatus.STALE_FEED,
+                                message = "Давно не обновлялся: последняя публикация $dateStr$suffix",
+                                latestPubDate = latestActualPubDate,
+                                fetchedCount = feed.items.size,
+                                newCount = sourceNewCount
+                            )
+                        }
+                        sourceNewCount == 0 && sourceAlreadyInDbCount > 0 -> SourceStatusInfo(
+                            sourceId = source.id,
+                            status = SourceHealthStatus.NO_NEW_ARTICLES,
+                            message = "Новых записей нет (все $sourceAlreadyInDbCount уже в базе)",
+                            latestPubDate = latestActualPubDate,
+                            fetchedCount = feed.items.size,
+                            newCount = 0
+                        )
+                        else -> SourceStatusInfo(
+                            sourceId = source.id,
+                            status = SourceHealthStatus.OK,
+                            message = "Загружено новых записей: $sourceNewCount",
+                            latestPubDate = latestActualPubDate,
+                            fetchedCount = feed.items.size,
+                            newCount = sourceNewCount
+                        )
+                    }
+                } catch (e: Exception) {
+                    val errMsg = e.message ?: "Ошибка сохранения новостей"
+                    statusMap[source.id] = SourceStatusInfo(
+                        sourceId = source.id,
+                        status = SourceHealthStatus.DB_SAVE_ERROR,
+                        message = "Записи получены, но не удалось сохранить в базу: $errMsg",
+                        fetchedCount = feed.items.size
                     )
+                    successfulSourcesCount++
                 }
             }
 
             _failedSources.value = failedList
+            _sourceStatuses.value = statusMap
 
             if (successfulSourcesCount > 0) {
                 userPreferencesRepository.setLastRefreshAt(System.currentTimeMillis())
@@ -355,6 +453,318 @@ class NewsRepository(
         }
     }
 
+    suspend fun diagnoseSource(
+        sourceId: Long,
+        selectedSourceIds: Set<Long> = emptySet(),
+        searchQuery: String = ""
+    ): Result<SourceDiagnosticReport> = withContext(Dispatchers.IO) {
+        try {
+            val sourceEntity = sourceDao.getSourceById(sourceId)
+                ?: return@withContext Result.failure(Exception("Источник не найден в локальной базе"))
+
+            val allSources = sourceDao.getAllSourcesSync().map { it.toDomain() }
+            val sourceTitleById = allSources.associate { it.id to it.title }
+            val storedWithTags = newsDao.getNewsWithTagsForSourceSync(sourceId)
+            val storedArticles = storedWithTags.map { newsWithTags ->
+                NewsArticle(
+                    id = newsWithTags.news.id,
+                    sourceId = newsWithTags.news.sourceId,
+                    sourceTitle = sourceEntity.title,
+                    guid = newsWithTags.news.guid,
+                    title = newsWithTags.news.title,
+                    summary = newsWithTags.news.summary,
+                    content = newsWithTags.news.content,
+                    link = newsWithTags.news.link,
+                    imageUrl = newsWithTags.news.imageUrl,
+                    pubDate = newsWithTags.news.pubDate,
+                    tags = newsWithTags.tags.map { it.toDomain() },
+                    titleRu = newsWithTags.news.titleRu,
+                    summaryRu = newsWithTags.news.summaryRu
+                )
+            }
+
+            val visibleStoredArticles = filterNewsArticles(
+                allNews = storedArticles,
+                sources = allSources,
+                selectedSourceIds = selectedSourceIds,
+                searchQuery = searchQuery
+            )
+
+            val fetchResult = feedFetcher.diagnoseFeed(sourceEntity.url)
+            val parsedFeed = fetchResult.parsedFeed
+
+            val fetchedItemsCount = parsedFeed?.items?.size ?: 0
+            val limitedItems = parsedFeed?.items
+                ?.sortedByDescending { it.pubDate }
+                ?.take(MAX_ITEMS_PER_FEED_FETCH)
+                .orEmpty()
+
+            val validDates = parsedFeed?.items?.mapNotNull { it.parsedPubDate }.orEmpty()
+            val latestFeedPubDate = validDates.maxOrNull()
+            val latestFeedRawPubDate = if (latestFeedPubDate != null) {
+                parsedFeed?.items
+                    ?.firstOrNull { it.parsedPubDate == latestFeedPubDate && !it.rawPubDate.isNullOrBlank() }
+                    ?.rawPubDate
+            } else {
+                parsedFeed?.items?.firstNotNullOfOrNull { it.rawPubDate }
+            }
+            val itemsWithValidDatesCount = validDates.size
+            val itemsWithoutValidDatesCount = (fetchedItemsCount - itemsWithValidDatesCount).coerceAtLeast(0)
+
+            var wouldInsertNewCount = 0
+            var alreadyInDbSameSourceCount = 0
+            var guidCollisionOtherSourceCount = 0
+            var wouldBeTrimmedCount = 0
+            var duplicateInsideFeedCount = 0
+            val collidingSourceTitles = linkedSetOf<String>()
+
+            val seenGuids = HashSet<String>()
+            val seenLinks = HashSet<String>()
+            val cutoffStoredPubDate = if (storedWithTags.size >= MAX_STORED_NEWS_PER_SOURCE) {
+                storedWithTags[MAX_STORED_NEWS_PER_SOURCE - 1].news.pubDate
+            } else {
+                null
+            }
+
+            if (parsedFeed != null) {
+                for (item in limitedItems) {
+                    val isDupInBatch = (item.guid.isNotBlank() && !seenGuids.add(item.guid)) ||
+                        (item.link.isNotBlank() && !seenLinks.add(item.link))
+                    if (isDupInBatch) {
+                        duplicateInsideFeedCount++
+                        continue
+                    }
+
+                    val existingByGuid = newsDao.getNewsByGuid(item.guid)
+                    val existingByLink = if (existingByGuid == null && item.link.isNotBlank()) {
+                        newsDao.getNewsByLink(item.link)
+                    } else {
+                        null
+                    }
+                    val existing = existingByGuid ?: existingByLink
+
+                    when {
+                        existing == null -> {
+                            wouldInsertNewCount++
+                            if (cutoffStoredPubDate != null && item.pubDate < cutoffStoredPubDate) {
+                                wouldBeTrimmedCount++
+                            }
+                        }
+                        existing.sourceId == sourceId -> {
+                            alreadyInDbSameSourceCount++
+                        }
+                        else -> {
+                            guidCollisionOtherSourceCount++
+                            collidingSourceTitles.add(
+                                sourceTitleById[existing.sourceId] ?: "Источник #${existing.sourceId}"
+                            )
+                        }
+                    }
+                }
+            }
+
+            val dbStep = when {
+                parsedFeed == null -> DiagnosticStep(
+                    id = "database",
+                    title = "Анализ сохранения в локальную БД",
+                    status = DiagnosticStepStatus.SKIPPED,
+                    summary = "Проверка входящих записей пропущена из-за ошибки получения/парсинга. В БД сейчас сохранено записей этого источника: ${storedWithTags.size}.",
+                    technicalDetails = "Текущий объём в Room для sourceId=$sourceId: ${storedWithTags.size} из макс. $MAX_STORED_NEWS_PER_SOURCE"
+                )
+                limitedItems.isEmpty() -> DiagnosticStep(
+                    id = "database",
+                    title = "Анализ сохранения в локальную БД",
+                    status = DiagnosticStepStatus.WARNING,
+                    summary = "Новых записей для сохранения нет (лента пуста). В локальной БД сейчас хранится: ${storedWithTags.size}.",
+                    technicalDetails = "В базе Room для sourceId=$sourceId: ${storedWithTags.size} записей"
+                )
+                guidCollisionOtherSourceCount > 0 && wouldInsertNewCount == 0 && alreadyInDbSameSourceCount == 0 -> DiagnosticStep(
+                    id = "database",
+                    title = "Анализ сохранения в локальную БД",
+                    status = DiagnosticStepStatus.ERROR,
+                    summary = "Все проверенные записи (${guidCollisionOtherSourceCount}) совпадают по guid/link с другим источником и не сохранятся повторно.",
+                    technicalDetails = buildString {
+                        append("Конфликт уникального индекса guid/link с источниками: ${collidingSourceTitles.joinToString(", ")}")
+                        append("\nВ БД уже хранится у текущего источника: ${storedWithTags.size}")
+                    }
+                )
+                guidCollisionOtherSourceCount > 0 -> DiagnosticStep(
+                    id = "database",
+                    title = "Анализ сохранения в локальную БД",
+                    status = DiagnosticStepStatus.WARNING,
+                    summary = "Новых к сохранению: $wouldInsertNewCount, уже в БД: $alreadyInDbSameSourceCount, пропущено из-за совпадения guid/link с другим источником: $guidCollisionOtherSourceCount.",
+                    technicalDetails = buildString {
+                        append("Проверено свежих записей: ${limitedItems.size} (лимит за обновление: $MAX_ITEMS_PER_FEED_FETCH)")
+                        append("\nКонфликтующие источники: ${collidingSourceTitles.joinToString(", ")}")
+                        append("\nВсего в Room по этому источнику: ${storedWithTags.size} (макс. $MAX_STORED_NEWS_PER_SOURCE)")
+                    }
+                )
+                wouldInsertNewCount > 0 && wouldBeTrimmedCount == wouldInsertNewCount -> DiagnosticStep(
+                    id = "database",
+                    title = "Анализ сохранения в локальную БД",
+                    status = DiagnosticStepStatus.WARNING,
+                    summary = "Все $wouldInsertNewCount новых записей старше уже сохранённых $MAX_STORED_NEWS_PER_SOURCE новостей и будут отсечены лимитом хранения.",
+                    technicalDetails = "В Room уже хранится ${storedWithTags.size} более свежих записей этого источника"
+                )
+                else -> DiagnosticStep(
+                    id = "database",
+                    title = "Анализ сохранения в локальную БД",
+                    status = DiagnosticStepStatus.SUCCESS,
+                    summary = "Конфликтов сохранения не найдено: новых записей $wouldInsertNewCount, уже сохранено в БД $alreadyInDbSameSourceCount (всего по источнику в БД: ${storedWithTags.size}).",
+                    technicalDetails = buildString {
+                        append("Проанализировано: ${limitedItems.size} из $fetchedItemsCount (лимит за раз: $MAX_ITEMS_PER_FEED_FETCH)")
+                        append("\nНовых к записи: $wouldInsertNewCount")
+                        append("\nУже в БД (sourceId=$sourceId): $alreadyInDbSameSourceCount")
+                        if (duplicateInsideFeedCount > 0) {
+                            append("\nДублей guid/link внутри самого фида: $duplicateInsideFeedCount")
+                        }
+                        if (wouldBeTrimmedCount > 0) {
+                            append("\nБудет отсечено лимитом $MAX_STORED_NEWS_PER_SOURCE записей: $wouldBeTrimmedCount")
+                        }
+                    }
+                )
+            }
+
+            val enabledSourceIds = allSources.filter { it.isEnabled }.map { it.id }.toSet()
+            val activeFilterIds = selectedSourceIds.intersect(enabledSourceIds)
+            val displayStep = when {
+                !sourceEntity.isEnabled -> DiagnosticStep(
+                    id = "display",
+                    title = "Отображение в ленте",
+                    status = DiagnosticStepStatus.WARNING,
+                    summary = "Источник выключен тумблером — его новости (${storedWithTags.size} в БД) скрыты и не обновляются.",
+                    technicalDetails = "isEnabled=false; в Room хранится ${storedWithTags.size}, в ленте отображается 0"
+                )
+                storedWithTags.isEmpty() && parsedFeed == null -> DiagnosticStep(
+                    id = "display",
+                    title = "Отображение в ленте",
+                    status = DiagnosticStepStatus.SKIPPED,
+                    summary = "В локальной базе пока нет сохранённых статей этого источника; отображение в ленте невозможно до устранения ошибки получения.",
+                    technicalDetails = "storedInDbCount=0, visibleInFeedCount=0"
+                )
+                storedWithTags.isEmpty() && wouldInsertNewCount == 0 -> DiagnosticStep(
+                    id = "display",
+                    title = "Отображение в ленте",
+                    status = DiagnosticStepStatus.WARNING,
+                    summary = "В локальной базе пока нет статей этого источника для отображения в ленте.",
+                    technicalDetails = "storedInDbCount=0, visibleInFeedCount=0"
+                )
+                storedWithTags.isEmpty() && wouldInsertNewCount > 0 -> DiagnosticStep(
+                    id = "display",
+                    title = "Отображение в ленте",
+                    status = DiagnosticStepStatus.WARNING,
+                    summary = "Источник готов, но новости ещё не загружены в БД (обнаружено $wouldInsertNewCount новых записей — обновите ленту).",
+                    technicalDetails = "Диагностика не изменяет БД. После обновления ленты в БД появится до $wouldInsertNewCount записей."
+                )
+                visibleStoredArticles.isEmpty() && storedWithTags.isNotEmpty() -> DiagnosticStep(
+                    id = "display",
+                    title = "Отображение в ленте",
+                    status = DiagnosticStepStatus.WARNING,
+                    summary = buildString {
+                        append("В БД есть ${storedWithTags.size} статей, но в ленте сейчас скрыты ")
+                        val reasons = mutableListOf<String>()
+                        if (activeFilterIds.isNotEmpty() && sourceId !in activeFilterIds) {
+                            reasons.add("фильтром по другим источникам")
+                        }
+                        if (searchQuery.isNotBlank()) {
+                            reasons.add("поисковым запросом «$searchQuery»")
+                        }
+                        append(reasons.ifEmpty { listOf("активными фильтрами") }.joinToString(" и "))
+                        append(".")
+                    },
+                    technicalDetails = "В БД: ${storedWithTags.size}; после filterNewsArticles: 0; selectedSourceIds=$activeFilterIds; query='$searchQuery'"
+                )
+                else -> DiagnosticStep(
+                    id = "display",
+                    title = "Отображение в ленте",
+                    status = DiagnosticStepStatus.SUCCESS,
+                    summary = "В ленте сейчас отображается ${visibleStoredArticles.size} из ${storedWithTags.size} сохранённых статей источника.",
+                    technicalDetails = buildString {
+                        append("isEnabled=true")
+                        append("\nОтображается в ленте: ${visibleStoredArticles.size}")
+                        append("\nВсего в БД: ${storedWithTags.size}")
+                        if (itemsWithoutValidDatesCount > 0) {
+                            append("\nВнимание: у $itemsWithoutValidDatesCount записей дата в XML не распознана — при обновлении подставляется время загрузки, что влияет на порядок сортировки.")
+                        }
+                    }
+                )
+            }
+
+            val now = System.currentTimeMillis()
+            val isStaleFeed = latestFeedPubDate != null && (now - latestFeedPubDate) > STALE_FEED_THRESHOLD_MS
+            val effectiveParsingStep = if (
+                isStaleFeed &&
+                fetchResult.parsingStep.status == DiagnosticStepStatus.SUCCESS
+            ) {
+                val dateStr = formatShortDate(latestFeedPubDate!!)
+                fetchResult.parsingStep.copy(
+                    status = DiagnosticStepStatus.WARNING,
+                    summary = "${fetchResult.parsingStep.summary} Однако источник давно не обновлялся (последняя публикация: $dateStr).",
+                    technicalDetails = buildString {
+                        if (!fetchResult.parsingStep.technicalDetails.isNullOrBlank()) {
+                            append(fetchResult.parsingStep.technicalDetails)
+                            append("\n")
+                        }
+                        append("Порог устаревания: более $STALE_FEED_THRESHOLD_DAYS дн. без новых записей")
+                    }
+                )
+            } else {
+                fetchResult.parsingStep
+            }
+
+            val allSteps = listOf(
+                fetchResult.networkStep,
+                fetchResult.httpStep,
+                fetchResult.contentTypeStep,
+                effectiveParsingStep,
+                dbStep,
+                displayStep
+            )
+
+            val firstError = allSteps.firstOrNull { it.status == DiagnosticStepStatus.ERROR }
+            val firstWarning = allSteps.firstOrNull { it.status == DiagnosticStepStatus.WARNING }
+            val overallStatus = when {
+                firstError != null -> DiagnosticStepStatus.ERROR
+                firstWarning != null -> DiagnosticStepStatus.WARNING
+                else -> DiagnosticStepStatus.SUCCESS
+            }
+            val failedStageTitle = firstError?.title ?: firstWarning?.title
+
+            Result.success(
+                SourceDiagnosticReport(
+                    sourceId = sourceEntity.id,
+                    sourceTitle = sourceEntity.title,
+                    sourceUrl = sourceEntity.url,
+                    isSourceEnabled = sourceEntity.isEnabled,
+                    checkedAt = System.currentTimeMillis(),
+                    overallStatus = overallStatus,
+                    failedStageTitle = failedStageTitle,
+                    httpCode = fetchResult.httpCode,
+                    finalUrl = fetchResult.finalUrl,
+                    contentType = fetchResult.contentType,
+                    responseTimeMs = fetchResult.responseTimeMs,
+                    responseSizeBytes = fetchResult.responseSizeBytes,
+                    feedFormat = fetchResult.feedFormat,
+                    fetchedItemsCount = fetchedItemsCount,
+                    processableItemsCount = limitedItems.size,
+                    latestFeedPubDate = latestFeedPubDate,
+                    latestFeedRawPubDate = latestFeedRawPubDate,
+                    itemsWithValidDatesCount = itemsWithValidDatesCount,
+                    itemsWithoutValidDatesCount = itemsWithoutValidDatesCount,
+                    storedInDbCount = storedWithTags.size,
+                    wouldInsertNewCount = wouldInsertNewCount,
+                    alreadyInDbSameSourceCount = alreadyInDbSameSourceCount,
+                    guidCollisionOtherSourceCount = guidCollisionOtherSourceCount,
+                    wouldBeTrimmedCount = wouldBeTrimmedCount,
+                    visibleInFeedCount = visibleStoredArticles.size,
+                    steps = allSteps
+                )
+            )
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun setSourceEnabled(sourceId: Long, isEnabled: Boolean) = withContext(Dispatchers.IO) {
         sourceDao.setSourceEnabled(sourceId, isEnabled)
     }
@@ -370,65 +780,239 @@ class NewsRepository(
         sourceDao.updateSortOrders(current.map { it.id })
     }
 
+    private suspend fun findDuplicateSourceByUrl(
+        candidateUrl: String,
+        excludingSourceId: Long? = null
+    ): SourceEntity? {
+        val normalizedCandidate = UrlNormalizer.normalizeForComparison(candidateUrl)
+        if (normalizedCandidate.isEmpty()) return null
+        return sourceDao.getAllSourcesSync().firstOrNull { existing ->
+            (excludingSourceId == null || existing.id != excludingSourceId) &&
+                UrlNormalizer.normalizeForComparison(existing.url) == normalizedCandidate
+        }
+    }
+
     suspend fun addSource(title: String, url: String): Result<Long> = withContext(Dispatchers.IO) {
-        try {
-            val existing = sourceDao.getSourceByUrl(url)
-            if (existing != null) {
-                return@withContext Result.failure(Exception("Источник с таким URL уже добавлен"))
-            }
+        sourceMutationMutex.withLock {
+            try {
+                val cleanUrl = url.trim()
+                if (cleanUrl.toHttpUrlOrNull() == null) {
+                    return@withContext Result.failure(Exception("Введите корректный URL (http:// или https://)"))
+                }
 
-            val testFetch = feedFetcher.fetchFeed(url)
-            val feedTitle = testFetch.getOrNull()?.title
-            val finalTitle = title.trim().ifEmpty { feedTitle ?: "RSS Источник" }
-            val nextSortOrder = sourceDao.getMaxSortOrder() + 1
+                val existing = findDuplicateSourceByUrl(cleanUrl)
+                if (existing != null) {
+                    return@withContext Result.failure(
+                        Exception("Этот источник уже добавлен («${existing.title}»)")
+                    )
+                }
 
-            val newSource = SourceEntity(
-                title = finalTitle,
-                url = url.trim(),
-                isEnabled = true,
-                sortOrder = nextSortOrder
-            )
-            val id = sourceDao.insertSource(newSource)
-            if (id > 0) {
-                testFetch.getOrNull()?.let { feed ->
-                    val allDbTags = tagDao.getAllTagsSync()
-                    val limitedItems = feed.items
-                        .sortedByDescending { it.pubDate }
-                        .take(MAX_ITEMS_PER_FEED_FETCH)
+                val testFetch = feedFetcher.fetchFeed(cleanUrl)
+                val feedTitle = testFetch.getOrNull()?.title
+                val finalTitle = title.trim().ifEmpty { feedTitle ?: "RSS Источник" }
+                val nextSortOrder = sourceDao.getMaxSortOrder() + 1
 
-                    for (item in limitedItems) {
-                        val entity = NewsEntity(
-                            sourceId = id,
-                            guid = item.guid,
-                            title = item.title,
-                            summary = item.description,
-                            content = item.content,
-                            link = item.link,
-                            imageUrl = item.imageUrl,
-                            pubDate = item.pubDate
-                        )
-                        val newsId = newsDao.insertNews(entity)
-                        if (newsId > 0) {
-                            val autoTags = findAutoTags(item.title, item.content, allDbTags)
-                            val crossRefs = autoTags.map { NewsTagCrossRef(newsId = newsId, tagId = it.id) }
-                            if (crossRefs.isNotEmpty()) {
-                                newsDao.insertNewsTagCrossRefs(crossRefs)
+                val newSource = SourceEntity(
+                    title = finalTitle,
+                    url = cleanUrl,
+                    isEnabled = true,
+                    sortOrder = nextSortOrder
+                )
+                val id = sourceDao.insertSource(newSource)
+                if (id > 0) {
+                    val feed = testFetch.getOrNull()
+                    if (feed != null) {
+                        val allDbTags = tagDao.getAllTagsSync()
+                        val limitedItems = feed.items
+                            .sortedByDescending { it.pubDate }
+                            .take(MAX_ITEMS_PER_FEED_FETCH)
+
+                        var savedCount = 0
+                        for (item in limitedItems) {
+                            val existingGuid = newsDao.getNewsByGuid(item.guid)
+                            val existingLink = if (existingGuid == null) newsDao.getNewsByLink(item.link) else null
+                            if (existingGuid == null && existingLink == null) {
+                                val entity = NewsEntity(
+                                    sourceId = id,
+                                    guid = item.guid,
+                                    title = item.title,
+                                    summary = item.description,
+                                    content = item.content,
+                                    link = item.link,
+                                    imageUrl = item.imageUrl,
+                                    pubDate = item.pubDate
+                                )
+                                val newsId = newsDao.insertNews(entity)
+                                if (newsId > 0) {
+                                    savedCount++
+                                    val autoTags = findAutoTags(item.title, item.content, allDbTags)
+                                    val crossRefs = autoTags.map { NewsTagCrossRef(newsId = newsId, tagId = it.id) }
+                                    if (crossRefs.isNotEmpty()) {
+                                        newsDao.insertNewsTagCrossRefs(crossRefs)
+                                    }
+                                }
                             }
                         }
+                        newsDao.trimOldNewsForSource(id, MAX_STORED_NEWS_PER_SOURCE)
+                        _sourceStatuses.value = _sourceStatuses.value + (
+                            id to if (feed.items.isEmpty()) {
+                                SourceStatusInfo(id, SourceHealthStatus.EMPTY_FEED, "Источник доступен, но RSS содержит 0 записей")
+                            } else {
+                                SourceStatusInfo(
+                                    id,
+                                    SourceHealthStatus.OK,
+                                    "Загружено новых записей: $savedCount",
+                                    latestPubDate = feed.items.mapNotNull { it.parsedPubDate }.maxOrNull(),
+                                    fetchedCount = feed.items.size,
+                                    newCount = savedCount
+                                )
+                            }
+                        )
+                    } else if (testFetch.isFailure) {
+                        val err = testFetch.exceptionOrNull()?.message ?: "Сервер не отвечает"
+                        _sourceStatuses.value = _sourceStatuses.value + (
+                            id to SourceStatusInfo(id, SourceHealthStatus.NETWORK_OR_HTTP_ERROR, err)
+                        )
                     }
-                    newsDao.trimOldNewsForSource(id, MAX_STORED_NEWS_PER_SOURCE)
+                    Result.success(id)
+                } else {
+                    Result.failure(Exception("Не удалось сохранить источник"))
                 }
-                Result.success(id)
-            } else {
-                Result.failure(Exception("Не удалось сохранить источник"))
+            } catch (e: Exception) {
+                Result.failure(e)
             }
-        } catch (e: Exception) {
-            Result.failure(e)
+        }
+    }
+
+    suspend fun updateSource(
+        sourceId: Long,
+        title: String,
+        url: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        sourceMutationMutex.withLock {
+            try {
+                val existing = sourceDao.getSourceById(sourceId)
+                    ?: return@withContext Result.failure(Exception("Источник не найден"))
+
+                val cleanUrl = url.trim()
+                if (cleanUrl.toHttpUrlOrNull() == null) {
+                    return@withContext Result.failure(Exception("Введите корректный URL (http:// или https://)"))
+                }
+
+                val duplicate = findDuplicateSourceByUrl(cleanUrl, excludingSourceId = sourceId)
+                if (duplicate != null) {
+                    return@withContext Result.failure(
+                        Exception("Этот источник уже добавлен («${duplicate.title}»)")
+                    )
+                }
+
+                val finalTitle = title.trim().ifEmpty { existing.title }
+                val urlChanged = UrlNormalizer.normalizeForComparison(existing.url) !=
+                    UrlNormalizer.normalizeForComparison(cleanUrl)
+
+                // Update in-place by primary key so existing saved news (ForeignKey sourceId) remain intact
+                sourceDao.updateSource(existing.copy(title = finalTitle, url = cleanUrl))
+
+                if (urlChanged) {
+                    if (existing.isEnabled) {
+                        val fetchResult = feedFetcher.fetchFeed(cleanUrl)
+                        val feed = fetchResult.getOrNull()
+                        if (feed != null) {
+                            val allDbTags = tagDao.getAllTagsSync()
+                            val limitedItems = feed.items
+                                .sortedByDescending { it.pubDate }
+                                .take(MAX_ITEMS_PER_FEED_FETCH)
+
+                            var savedCount = 0
+                            var alreadyInDbCount = 0
+                            var saveFailedCount = 0
+
+                            for (item in limitedItems) {
+                                val existingByGuid = newsDao.getNewsByGuid(item.guid)
+                                val existingByLink = if (existingByGuid == null) newsDao.getNewsByLink(item.link) else null
+                                if (existingByGuid == null && existingByLink == null) {
+                                    val newsId = newsDao.insertNews(
+                                        NewsEntity(
+                                            sourceId = sourceId,
+                                            guid = item.guid,
+                                            title = item.title,
+                                            summary = item.description,
+                                            content = item.content,
+                                            link = item.link,
+                                            imageUrl = item.imageUrl,
+                                            pubDate = item.pubDate
+                                        )
+                                    )
+                                    if (newsId > 0) {
+                                        savedCount++
+                                        val autoTags = findAutoTags(item.title, item.content, allDbTags)
+                                        val crossRefs = autoTags.map { NewsTagCrossRef(newsId = newsId, tagId = it.id) }
+                                        if (crossRefs.isNotEmpty()) {
+                                            newsDao.insertNewsTagCrossRefs(crossRefs)
+                                        }
+                                    } else {
+                                        saveFailedCount++
+                                    }
+                                } else {
+                                    alreadyInDbCount++
+                                }
+                            }
+                            newsDao.trimOldNewsForSource(sourceId, MAX_STORED_NEWS_PER_SOURCE)
+
+                            val latestDate = feed.items.mapNotNull { it.parsedPubDate }.maxOrNull()
+                            val isStale = latestDate != null &&
+                                (System.currentTimeMillis() - latestDate) > STALE_FEED_THRESHOLD_MS
+
+                            _sourceStatuses.value = _sourceStatuses.value + (
+                                sourceId to when {
+                                    feed.items.isEmpty() -> SourceStatusInfo(
+                                        sourceId, SourceHealthStatus.EMPTY_FEED,
+                                        "Источник доступен, но RSS содержит 0 записей"
+                                    )
+                                    saveFailedCount > 0 && savedCount == 0 -> SourceStatusInfo(
+                                        sourceId, SourceHealthStatus.DB_SAVE_ERROR,
+                                        "Записи получены, но не удалось сохранить их в базу",
+                                        latestPubDate = latestDate, fetchedCount = feed.items.size
+                                    )
+                                    isStale -> SourceStatusInfo(
+                                        sourceId, SourceHealthStatus.STALE_FEED,
+                                        "Давно не обновлялся: последняя публикация ${formatShortDate(latestDate!!)}",
+                                        latestPubDate = latestDate, fetchedCount = feed.items.size, newCount = savedCount
+                                    )
+                                    savedCount == 0 && alreadyInDbCount > 0 -> SourceStatusInfo(
+                                        sourceId, SourceHealthStatus.NO_NEW_ARTICLES,
+                                        "Новых записей нет (все $alreadyInDbCount уже в базе)",
+                                        latestPubDate = latestDate, fetchedCount = feed.items.size
+                                    )
+                                    else -> SourceStatusInfo(
+                                        sourceId, SourceHealthStatus.OK,
+                                        "Источник обновлён, новых записей: $savedCount",
+                                        latestPubDate = latestDate, fetchedCount = feed.items.size, newCount = savedCount
+                                    )
+                                }
+                            )
+                        } else {
+                            val errMsg = fetchResult.exceptionOrNull()?.message ?: "Ошибка загрузки нового URL"
+                            _sourceStatuses.value = _sourceStatuses.value + (
+                                sourceId to SourceStatusInfo(sourceId, SourceHealthStatus.NETWORK_OR_HTTP_ERROR, errMsg)
+                            )
+                        }
+                    } else {
+                        _sourceStatuses.value = _sourceStatuses.value - sourceId
+                    }
+                }
+
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
         }
     }
 
     suspend fun deleteSource(sourceId: Long) = withContext(Dispatchers.IO) {
         sourceDao.deleteSourceById(sourceId)
+        _sourceStatuses.value = _sourceStatuses.value - sourceId
+        _failedSources.value = _failedSources.value.filterNot { it.sourceId == sourceId }
     }
 
     suspend fun saveTag(name: String, colorHex: String, keywords: String): Long = withContext(Dispatchers.IO) {
@@ -600,15 +1184,15 @@ class NewsRepository(
         var importedTagsCount = 0
         var linkedArticleTagsCount = 0
 
-        // Merge sources without duplicates
+        // Merge sources without duplicates (using normalized URL matching)
         var nextSortOrder = sourceDao.getMaxSortOrder() + 1
         for (src in config.sources) {
-            val existing = sourceDao.getSourceByUrl(src.url)
+            val existing = findDuplicateSourceByUrl(src.url)
             if (existing == null) {
                 sourceDao.insertSource(
                     SourceEntity(
                         title = src.title,
-                        url = src.url,
+                        url = src.url.trim(),
                         isEnabled = src.isEnabled,
                         sortOrder = nextSortOrder++
                     )
@@ -702,6 +1286,11 @@ class NewsRepository(
         createdAt = createdAt,
         sortOrder = sortOrder
     )
+
+    private fun formatShortDate(timestamp: Long): String {
+        val sdf = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault())
+        return sdf.format(Date(timestamp))
+    }
 
     private fun TagEntity.toDomain() = TagItem(
         id = id,

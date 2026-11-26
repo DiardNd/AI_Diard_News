@@ -25,6 +25,10 @@ interface NewsDao {
     suspend fun getAllNewsSync(): List<NewsEntity>
 
     @Transaction
+    @Query("SELECT * FROM news WHERE sourceId = :sourceId ORDER BY pubDate DESC, id DESC")
+    suspend fun getNewsWithTagsForSourceSync(sourceId: Long): List<NewsWithTags>
+
+    @Transaction
     @Query("SELECT * FROM news WHERE id = :newsId")
     fun getNewsWithTagsById(newsId: Long): Flow<NewsWithTags?>
 

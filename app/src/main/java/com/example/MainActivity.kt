@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun DiardNewsApp(viewModel: NewsViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val diagnosticsState by viewModel.sourceDiagnosticsState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Feed) }
     val feedListState = rememberLazyListState()
@@ -161,6 +162,18 @@ fun DiardNewsApp(viewModel: NewsViewModel) {
                         onDeleteSource = { id -> viewModel.deleteSource(id) },
                         onMoveSourceUp = { id -> viewModel.moveSourceUp(id) },
                         onMoveSourceDown = { id -> viewModel.moveSourceDown(id) },
+                        sourceSortMode = uiState.sourceSortMode,
+                        onSelectSortMode = { mode -> viewModel.setSourceSortMode(mode) },
+                        onEditSource = { id, title, url, onComplete ->
+                            viewModel.editSource(id, title, url, onComplete)
+                        },
+                        sourceStatuses = uiState.sourceStatuses,
+                        onDiagnoseSource = { id -> viewModel.runSourceDiagnostics(id) },
+                        diagnosticsState = diagnosticsState,
+                        onDismissDiagnostics = { viewModel.dismissSourceDiagnostics() },
+                        onRetryDiagnostics = {
+                            diagnosticsState.sourceId?.let { viewModel.runSourceDiagnostics(it) }
+                        },
                         onRestorePresets = { viewModel.resetDefaultSources() },
                         onExportToUri = { uri ->
                             coroutineScope.launch {

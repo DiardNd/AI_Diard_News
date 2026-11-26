@@ -10,10 +10,16 @@ import com.example.data.repository.FailedSourceInfo
 import com.example.data.repository.NewsRepository
 import com.example.domain.model.NewsArticle
 import com.example.domain.model.NewsSource
+import com.example.domain.model.SourceDiagnosticReport
+import com.example.domain.model.SourceSortMode
+import com.example.domain.model.SourceStatusInfo
 import com.example.domain.model.TagItem
+import com.example.domain.model.sortSources
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -24,6 +30,16 @@ data class TranslatedArticle(
     val summaryRu: String,
     val contentRu: String,
     val isShowingRussian: Boolean = true
+)
+
+data class SourceDiagnosticsUiState(
+    val isDialogVisible: Boolean = false,
+    val isLoading: Boolean = false,
+    val sourceId: Long? = null,
+    val sourceTitle: String = "",
+    val sourceUrl: String = "",
+    val report: SourceDiagnosticReport? = null,
+    val errorMessage: String? = null
 )
 
 data class NewsFeedUiState(
@@ -39,7 +55,9 @@ data class NewsFeedUiState(
     val selectedArticle: NewsArticle? = null,
     val translations: Map<Long, TranslatedArticle> = emptyMap(),
     val lastRefreshAt: Long = 0L,
-    val failedSources: List<FailedSourceInfo> = emptyList()
+    val failedSources: List<FailedSourceInfo> = emptyList(),
+    val sourceSortMode: SourceSortMode = SourceSortMode.MANUAL,
+    val sourceStatuses: Map<Long, SourceStatusInfo> = emptyMap()
 )
 
 internal fun filterNewsArticles(
@@ -90,6 +108,9 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
     private val _networkError = MutableStateFlow<String?>(null)
     private val _selectedArticleId = MutableStateFlow<Long?>(null)
     private val _translations = MutableStateFlow<Map<Long, TranslatedArticle>>(emptyMap())
+    private val _sourceDiagnosticsState = MutableStateFlow(SourceDiagnosticsUiState())
+    val sourceDiagnosticsState: StateFlow<SourceDiagnosticsUiState> = _sourceDiagnosticsState.asStateFlow()
+    private var diagnosticsJob: Job? = null
 
     private val filteredData = combine(
         repository.allNews,
@@ -109,9 +130,11 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val refreshMeta = combine(
         repository.lastRefreshAt,
-        repository.failedSources
-    ) { refreshAt: Long, failed: List<FailedSourceInfo> ->
-        refreshAt to failed
+        repository.failedSources,
+        preferencesRepository.sourceSortMode,
+        repository.sourceStatuses
+    ) { refreshAt: Long, failed: List<FailedSourceInfo>, sortMode: SourceSortMode, statuses: Map<Long, SourceStatusInfo> ->
+        RefreshMetaBundle(refreshAt, failed, sortMode, statuses)
     }
 
     private val extraState = combine(
@@ -120,8 +143,17 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         _userMessage,
         _networkError,
         refreshMeta
-    ) { refreshing: Boolean, translating: Boolean, msg: String?, netErr: String?, meta: Pair<Long, List<FailedSourceInfo>> ->
-        ExtraStateBundle(refreshing, translating, msg, netErr, meta.first, meta.second)
+    ) { refreshing: Boolean, translating: Boolean, msg: String?, netErr: String?, meta: RefreshMetaBundle ->
+        ExtraStateBundle(
+            isRefreshing = refreshing,
+            isTranslating = translating,
+            userMessage = msg,
+            networkError = netErr,
+            lastRefreshAt = meta.lastRefreshAt,
+            failedSources = meta.failedSources,
+            sourceSortMode = meta.sourceSortMode,
+            sourceStatuses = meta.sourceStatuses
+        )
     }
 
     val uiState: StateFlow<NewsFeedUiState> = combine(
@@ -132,8 +164,9 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         _selectedSourceIds
     ) { data, extra, articleId, translations, selectedSources ->
         val (allNews, filteredArticles, sourcesAndTags) = data
-        val (sources, tags) = sourcesAndTags
-        val enabledIds = sources.filter { it.isEnabled }.map { it.id }.toSet()
+        val (rawSources, tags) = sourcesAndTags
+        val sortedSources = sortSources(rawSources, extra.sourceSortMode)
+        val enabledIds = sortedSources.filter { it.isEnabled }.map { it.id }.toSet()
 
         val selectedArticle = articleId?.let { id ->
             allNews.firstOrNull { it.id == id }
@@ -141,7 +174,7 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
 
         NewsFeedUiState(
             articles = filteredArticles,
-            sources = sources,
+            sources = sortedSources,
             tags = tags,
             selectedSourceIds = selectedSources.intersect(enabledIds),
             searchQuery = _searchQuery.value,
@@ -152,7 +185,9 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
             selectedArticle = selectedArticle,
             translations = translations,
             lastRefreshAt = extra.lastRefreshAt,
-            failedSources = extra.failedSources
+            failedSources = extra.failedSources,
+            sourceSortMode = extra.sourceSortMode,
+            sourceStatuses = extra.sourceStatuses
         )
     }.stateIn(
         scope = viewModelScope,
@@ -215,6 +250,12 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setSourceSortMode(mode: SourceSortMode) {
+        viewModelScope.launch {
+            preferencesRepository.setSourceSortMode(mode)
+        }
+    }
+
     fun addSource(title: String, url: String, onComplete: (Boolean, String?) -> Unit) {
         viewModelScope.launch {
             _isRefreshing.value = true
@@ -226,6 +267,22 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
                 onComplete(true, null)
             } else {
                 val errorMsg = res.exceptionOrNull()?.message ?: "Не удалось добавить источник"
+                onComplete(false, errorMsg)
+            }
+        }
+    }
+
+    fun editSource(sourceId: Long, title: String, url: String, onComplete: (Boolean, String?) -> Unit) {
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            val res = repository.updateSource(sourceId, title, url)
+            _isRefreshing.value = false
+            if (res.isSuccess) {
+                _userMessage.value = "Источник обновлён"
+                schedulePreviewTranslations()
+                onComplete(true, null)
+            } else {
+                val errorMsg = res.exceptionOrNull()?.message ?: "Не удалось обновить источник"
                 onComplete(false, errorMsg)
             }
         }
@@ -245,6 +302,56 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
             _userMessage.value = "Стандартные источники восстановлены"
             refreshFeeds()
         }
+    }
+
+    fun runSourceDiagnostics(sourceId: Long) {
+        diagnosticsJob?.cancel()
+        val sourceInfo = uiState.value.sources.firstOrNull { it.id == sourceId }
+        _sourceDiagnosticsState.value = SourceDiagnosticsUiState(
+            isDialogVisible = true,
+            isLoading = true,
+            sourceId = sourceId,
+            sourceTitle = sourceInfo?.title ?: "RSS-источник",
+            sourceUrl = sourceInfo?.url ?: "",
+            report = null,
+            errorMessage = null
+        )
+
+        diagnosticsJob = viewModelScope.launch {
+            val result = repository.diagnoseSource(
+                sourceId = sourceId,
+                selectedSourceIds = _selectedSourceIds.value,
+                searchQuery = _searchQuery.value
+            )
+            if (result.isSuccess) {
+                val report = result.getOrThrow()
+                _sourceDiagnosticsState.update { current ->
+                    if (!current.isDialogVisible || current.sourceId != sourceId) current
+                    else current.copy(
+                        isLoading = false,
+                        sourceTitle = report.sourceTitle,
+                        sourceUrl = report.sourceUrl,
+                        report = report,
+                        errorMessage = null
+                    )
+                }
+            } else {
+                val err = result.exceptionOrNull()?.message ?: "Не удалось выполнить диагностику"
+                _sourceDiagnosticsState.update { current ->
+                    if (!current.isDialogVisible || current.sourceId != sourceId) current
+                    else current.copy(
+                        isLoading = false,
+                        errorMessage = err
+                    )
+                }
+            }
+        }
+    }
+
+    fun dismissSourceDiagnostics() {
+        diagnosticsJob?.cancel()
+        diagnosticsJob = null
+        _sourceDiagnosticsState.value = SourceDiagnosticsUiState()
     }
 
     fun toggleSourceFilter(sourceId: Long) {
@@ -407,12 +514,21 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         _userMessage.value = null
     }
 
+    private data class RefreshMetaBundle(
+        val lastRefreshAt: Long,
+        val failedSources: List<FailedSourceInfo>,
+        val sourceSortMode: SourceSortMode,
+        val sourceStatuses: Map<Long, SourceStatusInfo>
+    )
+
     private data class ExtraStateBundle(
         val isRefreshing: Boolean,
         val isTranslating: Boolean,
         val userMessage: String?,
         val networkError: String?,
         val lastRefreshAt: Long,
-        val failedSources: List<FailedSourceInfo>
+        val failedSources: List<FailedSourceInfo>,
+        val sourceSortMode: SourceSortMode,
+        val sourceStatuses: Map<Long, SourceStatusInfo>
     )
 }

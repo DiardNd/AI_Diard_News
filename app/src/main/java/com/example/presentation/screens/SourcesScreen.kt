@@ -3,6 +3,8 @@ package com.example.presentation.screens
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -16,24 +18,28 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.Upload
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,9 +48,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.domain.model.NewsSource
+import com.example.domain.model.SourceSortMode
+import com.example.domain.model.SourceStatusInfo
 import com.example.presentation.components.AddSourceDialog
+import com.example.presentation.components.EditSourceDialog
 import com.example.presentation.components.EmptyStateView
+import com.example.presentation.components.SourceDiagnosticsDialog
 import com.example.presentation.components.SourceItemCard
+import com.example.presentation.viewmodel.SourceDiagnosticsUiState
 
 @Composable
 fun SourcesScreen(
@@ -57,10 +68,25 @@ fun SourcesScreen(
     onRestorePresets: () -> Unit,
     onExportToUri: (Uri) -> Unit,
     onImportFromUri: (Uri) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sourceSortMode: SourceSortMode = SourceSortMode.MANUAL,
+    onSelectSortMode: (SourceSortMode) -> Unit = {},
+    onEditSource: (id: Long, title: String, url: String, onComplete: (Boolean, String?) -> Unit) -> Unit = { _, _, _, cb -> cb(true, null) },
+    sourceStatuses: Map<Long, SourceStatusInfo> = emptyMap(),
+    onDiagnoseSource: (Long) -> Unit = {},
+    diagnosticsState: SourceDiagnosticsUiState = SourceDiagnosticsUiState(),
+    onDismissDiagnostics: () -> Unit = {},
+    onRetryDiagnostics: () -> Unit = {}
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
     var isAdding by remember { mutableStateOf(false) }
+    var addSourceError by remember { mutableStateOf<String?>(null) }
+
+    var editingSource by remember { mutableStateOf<NewsSource?>(null) }
+    var isEditing by remember { mutableStateOf(false) }
+    var editSourceError by remember { mutableStateOf<String?>(null) }
+
+    var showHelpHint by rememberSaveable { mutableStateOf(false) }
 
     // SAF Document Launchers
     val exportLauncher = rememberLauncherForActivityResult(
@@ -82,7 +108,10 @@ fun SourcesScreen(
     Scaffold(
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { showAddDialog = true },
+                onClick = {
+                    addSourceError = null
+                    showAddDialog = true
+                },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
                 modifier = Modifier.testTag("add_source_fab")
@@ -97,71 +126,115 @@ fun SourcesScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // Header Card with SAF Export/Import buttons
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-                ),
+            // Compact Header Toolbar
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.RssFeed,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Источники (${sources.size})",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = { exportLauncher.launch("diardnews_backup.json") },
+                        modifier = Modifier.testTag("export_config_button")
+                    ) {
                         Icon(
-                            imageVector = Icons.Default.RssFeed,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Управление RSS/Atom источниками",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onSurface
+                            imageVector = Icons.Default.Upload,
+                            contentDescription = "Экспорт JSON",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Отключите переключатель, чтобы скрыть новости источника. Стрелки ↑ и ↓ меняют порядок источников в списке и в фильтре ленты.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Export / Import buttons
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    IconButton(
+                        onClick = { importLauncher.launch(arrayOf("application/json", "text/*", "*/*")) },
+                        modifier = Modifier.testTag("import_config_button")
                     ) {
-                        OutlinedButton(
-                            onClick = { exportLauncher.launch("diardnews_backup.json") },
-                            contentPadding = ButtonDefaults.TextButtonContentPadding,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("export_config_button")
-                        ) {
-                            Icon(Icons.Default.Upload, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Экспорт JSON", fontSize = 12.sp)
-                        }
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = "Импорт JSON",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
 
-                        OutlinedButton(
-                            onClick = { importLauncher.launch(arrayOf("application/json", "text/*", "*/*")) },
-                            contentPadding = ButtonDefaults.TextButtonContentPadding,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("import_config_button")
-                        ) {
-                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Импорт JSON", fontSize = 12.sp)
-                        }
+                    IconButton(
+                        onClick = { showHelpHint = !showHelpHint },
+                        modifier = Modifier.testTag("sources_help_toggle_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.HelpOutline,
+                            contentDescription = "Подсказка по источникам",
+                            tint = if (showHelpHint) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
                     }
                 }
             }
+
+            // Collapsible Help Card (closed by default)
+            AnimatedVisibility(visible = showHelpHint) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .testTag("sources_help_hint_card")
+                ) {
+                    Text(
+                        text = "Переключатель включает или скрывает новости источника. В ручном режиме сортировки стрелки ↑ и ↓ меняют порядок источников в списке и в фильтре ленты. Кнопка редактирования позволяет изменить название и URL без потери сохранённых новостей.",
+                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 17.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+
+            // Compact Sort Mode Selector Strip
+            val sortScrollState = rememberScrollState()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(sortScrollState)
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SourceSortMode.entries.forEach { mode ->
+                    val isSelected = sourceSortMode == mode
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { onSelectSortMode(mode) },
+                        label = { Text(mode.shortLabel, fontSize = 12.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        ),
+                        modifier = Modifier.testTag("sort_mode_${mode.name}")
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
 
             // Sources list or Empty State
             if (sources.isEmpty()) {
@@ -170,7 +243,10 @@ fun SourcesScreen(
                     title = "Пока нет источников — добавьте первый",
                     description = "Добавьте RSS/Atom ленту любимого эмулятора вручную или восстановите стартовые пресеты (RetroArch, Dolphin, Winlator, Reddit, PPSSPP).",
                     actionText = "Добавить источник",
-                    onActionClick = { showAddDialog = true },
+                    onActionClick = {
+                        addSourceError = null
+                        showAddDialog = true
+                    },
                     secondaryActionText = "Восстановить пресеты",
                     onSecondaryActionClick = onRestorePresets,
                     testTag = "empty_state_sources"
@@ -193,8 +269,15 @@ fun SourcesScreen(
                             onDelete = { onDeleteSource(source.id) },
                             canMoveUp = index > 0,
                             canMoveDown = index < sources.lastIndex,
+                            showManualSortControls = sourceSortMode == SourceSortMode.MANUAL,
                             onMoveUp = { onMoveSourceUp(source.id) },
                             onMoveDown = { onMoveSourceDown(source.id) },
+                            onEdit = {
+                                editSourceError = null
+                                editingSource = source
+                            },
+                            onDiagnose = { onDiagnoseSource(source.id) },
+                            statusInfo = sourceStatuses[source.id],
                             modifier = Modifier.animateItem()
                         )
                     }
@@ -205,16 +288,65 @@ fun SourcesScreen(
 
     if (showAddDialog) {
         AddSourceDialog(
-            onDismiss = { showAddDialog = false },
+            onDismiss = {
+                addSourceError = null
+                showAddDialog = false
+            },
             onAdd = { title, url ->
-                isAdding = true
-                onAddSource(title, url) { success, _ ->
-                    isAdding = false
-                    if (success) {
-                        showAddDialog = false
+                if (!isAdding) {
+                    isAdding = true
+                    addSourceError = null
+                    onAddSource(title, url) { success, errMsg ->
+                        isAdding = false
+                        if (success) {
+                            addSourceError = null
+                            showAddDialog = false
+                        } else {
+                            addSourceError = errMsg ?: "Не удалось добавить источник"
+                        }
+                    }
+                }
+            },
+            existingSources = sources,
+            externalError = addSourceError,
+            isSubmitting = isAdding
+        )
+    }
+
+    val currentEditTarget = editingSource
+    if (currentEditTarget != null) {
+        EditSourceDialog(
+            source = currentEditTarget,
+            existingSources = sources,
+            externalError = editSourceError,
+            isSubmitting = isEditing,
+            onDismiss = {
+                editSourceError = null
+                editingSource = null
+            },
+            onSave = { newTitle, newUrl ->
+                if (!isEditing) {
+                    isEditing = true
+                    editSourceError = null
+                    onEditSource(currentEditTarget.id, newTitle, newUrl) { success, errMsg ->
+                        isEditing = false
+                        if (success) {
+                            editSourceError = null
+                            editingSource = null
+                        } else {
+                            editSourceError = errMsg ?: "Не удалось сохранить изменения"
+                        }
                     }
                 }
             }
+        )
+    }
+
+    if (diagnosticsState.isDialogVisible) {
+        SourceDiagnosticsDialog(
+            state = diagnosticsState,
+            onRetry = onRetryDiagnostics,
+            onDismiss = onDismissDiagnostics
         )
     }
 }

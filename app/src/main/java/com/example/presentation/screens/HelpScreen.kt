@@ -27,12 +27,14 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -43,15 +45,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.config.ChangelogProvider
+import com.example.data.config.VersionChangelogEntry
 
 data class HelpSection(
     val title: String,
@@ -68,16 +74,27 @@ fun HelpScreen(
 ) {
     BackHandler { onBack() }
 
+    val context = LocalContext.current
+    val changelogEntries = remember(context) {
+        ChangelogProvider.loadFromContext(context)
+    }
+    val latestVersion = changelogEntries.firstOrNull()
+    val previousVersions = remember(changelogEntries) {
+        if (changelogEntries.size > 1) changelogEntries.drop(1) else emptyList()
+    }
+    var showPreviousVersions by rememberSaveable { mutableStateOf(false) }
+
     val sections = listOf(
         HelpSection(
             title = "1. Источники новостей (RSS / Atom)",
             icon = Icons.Default.RssFeed,
-            summary = "Добавление лент, отключение, сортировка порядка и пресеты",
+            summary = "Добавление, редактирование, сортировка, диагностика и статусы лент",
             details = listOf(
-                "• Добавление: Нажмите вкладку «Источники» и кнопку «+» внизу экрана. Введите название и URL RSS-ленты (например: https://example.com/feed).",
-                "• Сортировка: Используйте кнопки со стрелками ↑ и ↓ на карточках источников — порядок сохраняется автоматически в базе и применяется к ленте фильтров.",
-                "• Готовые пресеты: В окне добавления доступны быстрые ссылки на блоги RetroArch, Dolphin, Reddit r/emulation, Winlator, PPSSPP и RPCS3.",
-                "• Переключатель (Switch): Отключите источник, если не хотите видеть его новости. Отключённые источники не обновляются и не тратят мобильный трафик.",
+                "• Добавление: Нажмите вкладку «Источники» и кнопку «+» внизу экрана. Дубликаты URL автоматически распознаются с нормализацией адреса.",
+                "• Редактирование: Нажмите значок карандаша на карточке источника, чтобы изменить название или RSS/Atom URL без потери сохранённых новостей.",
+                "• Сортировка: Выберите режим («Ручная», «А–Я», «Сначала включённые», «Сначала новые») — выбор сохраняется после перезапуска. В ручном режиме доступны стрелки ↑ и ↓.",
+                "• Диагностика и статусы: Карточка источника показывает причину проблем (ошибка сети/HTTP, 0 записей, нет новых статей, устаревший фид или ошибка БД). Кнопка «Диагностика» запускает подробную проверку без изменения базы.",
+                "• Переключатель (Switch): Отключите источник, если не хотите видеть его новости. Отключённые источники не обновляются и не тратят трафик.",
                 "• Удаление: Нажмите на значок корзины на карточке источника для его полного удаления."
             )
         ),
@@ -89,7 +106,7 @@ fun HelpScreen(
                 "• Чипы источников: В верхней части ленты отображаются все включённые RSS-источники в выбранном вами порядке. Нажмите на нужные источники (доступен мультивыбор), чтобы оставить только их новости.",
                 "• Прокрутка вверх: Повторное нажатие на активный чип («Все» или выбранный источник при прокрученной ленте) плавно возвращает список новостей в начало.",
                 "• Показать всё: Нажмите чип «Все» или «Сбросить фильтры», чтобы вернуться к общей ленте.",
-                "• Поиск: Строка поиска работает поверх выбранных источников и ищет по оригинальному и переведённому тексту, а также по тегам."
+                "• Поиск: Компактная строка поиска работает поверх выбранных источников и ищет по оригинальному и переведённому тексту, а также по тегам."
             )
         ),
         HelpSection(
@@ -141,7 +158,8 @@ fun HelpScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(innerPadding)
+                .testTag("help_lazy_list"),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -189,68 +207,179 @@ fun HelpScreen(
                 }
             }
 
-            // "Что нового в 0.0.4" Section
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
-                    ),
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth().testTag("whats_new_004_card")
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.AutoAwesome,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.secondary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text(
-                                    text = "Что нового в версии 0.0.4",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = "Навигация в ленте и ручная сортировка источников",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+            if (latestVersion != null) {
+                item {
+                    LatestChangelogCard(entry = latestVersion)
+                }
+            }
 
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        val changelogItems = listOf(
-                            "📌 Сохранение позиции в ленте: при открытии статьи и возврате назад список остаётся на том же месте.",
-                            "⬆️ Быстрая прокрутка вверх: повторное нажатие на активный фильтр («Все» или выбранный источник) плавно прокручивает ленту новостей в начало.",
-                            "↕️ Сортировка источников: во вкладке «Источники» можно вручную менять порядок источников стрелками ↑ / ↓ — порядок сохраняется после перезапуска и отражается в фильтрах."
-                        )
-
-                        changelogItems.forEach { itemText ->
-                            Text(
-                                text = "• $itemText",
-                                style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(vertical = 3.dp)
-                            )
-                        }
-                    }
+            if (previousVersions.isNotEmpty()) {
+                item {
+                    PreviousVersionsHistoryCard(
+                        entries = previousVersions,
+                        isExpanded = showPreviousVersions,
+                        onToggle = { showPreviousVersions = !showPreviousVersions }
+                    )
                 }
             }
 
             items(sections) { section ->
                 HelpSectionCard(section = section)
+            }
+        }
+    }
+}
+
+@Composable
+private fun LatestChangelogCard(entry: VersionChangelogEntry) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+        ),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("whats_new_latest_card")
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "Что нового в версии ${entry.version}",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (entry.title.isNotBlank()) {
+                        Text(
+                            text = entry.title,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            entry.changes.forEach { change ->
+                Text(
+                    text = "• $change",
+                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(vertical = 3.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PreviousVersionsHistoryCard(
+    entries: List<VersionChangelogEntry>,
+    isExpanded: Boolean,
+    onToggle: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("changelog_history_card")
+            .clickable(onClick = onToggle)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.History,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "История изменений (${entries.size})",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Список изменений предыдущих версий (${entries.first().version}–${entries.last().version})",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (isExpanded) "Свернуть историю" else "Развернуть историю",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            AnimatedVisibility(visible = isExpanded) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp)
+                        .testTag("changelog_history_list"),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    entries.forEachIndexed { index, entry ->
+                        if (index > 0) {
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                            )
+                        }
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = buildString {
+                                    append("Версия ${entry.version}")
+                                    if (entry.title.isNotBlank()) {
+                                        append(" — ${entry.title}")
+                                    }
+                                },
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            entry.changes.forEach { change ->
+                                Text(
+                                    text = "• $change",
+                                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
